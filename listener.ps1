@@ -30,39 +30,67 @@ function Send-Response {
     $response.OutputStream.Close()
 }
 
-# Ruta absoluta del inventario (usando la misma base que el resto)
 $inventoryPath = Join-Path $CONFIG.VMBasePath "inventory.json"
-Write-Log ("Inventario ubicado en: " + $inventoryPath) "INFO"
+
+# Función que sincroniza el inventario con las VMs reales de Hyper-V
+function Sync-InventoryWithHyperV {
+    Write-Log "Sincronizando inventario con Hyper-V..." "INFO"
+    $vms = Get-VM | Where-Object { $_.Name -ne "" } | Select-Object Name, State
+    $inventory = @()
+    
+    # Intentar cargar inventario existente para conservar IPs asignadas previamente
+    $oldInventory = @()
+    if (Test-Path $inventoryPath) {
+        try {
+            $oldInventory = Get-Content $inventoryPath -Raw | ConvertFrom-Json
+        } catch { Write-Log "Inventario previo corrupto, se reconstruirá" "WARN" }
+    }
+    
+    foreach ($vm in $vms) {
+        # Buscar si la VM ya tenía IP asignada en el inventario antiguo
+        $oldEntry = $oldInventory | Where-Object { $_.Name -eq $vm.Name }
+        if ($oldEntry) {
+            $inventory += [PSCustomObject]@{
+                Name    = $vm.Name
+                IP      = $oldEntry.IP
+                Created = $oldEntry.Created
+                Status  = $vm.State
+            }
+        } else {
+            # VM nueva sin IP asignada aún, se asignará después
+            $inventory += [PSCustomObject]@{
+                Name    = $vm.Name
+                IP      = $null
+                Created = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+                Status  = $vm.State
+            }
+        }
+    }
+    
+    # Guardar inventario sincronizado
+    $inventory | ConvertTo-Json | Out-File $inventoryPath -Encoding UTF8
+    Write-Log ("Inventario sincronizado. VMs encontradas: " + $vms.Count) "INFO"
+    return $inventory
+}
 
 function Get-VMInventory {
     if (Test-Path $inventoryPath) {
-        Write-Log "DEBUG: Leyendo inventario desde $inventoryPath" "INFO"
         $content = Get-Content $inventoryPath -Raw -ErrorAction SilentlyContinue
         if ($content) {
-            try {
-                $data = $content | ConvertFrom-Json
-                Write-Log "DEBUG: Inventario leído correctamente. VMs: $($data.Count)" "INFO"
-                return $data
-            } catch {
-                Write-Log ("ERROR al convertir JSON: " + $_) "ERROR"
-                return @()
-            }
-        } else {
-            Write-Log "DEBUG: El archivo inventario está vacío" "WARN"
-            return @()
+            try { return $content | ConvertFrom-Json }
+            catch { return @() }
         }
-    } else {
-        Write-Log "DEBUG: No existe el archivo de inventario, se creará al añadir primera VM" "INFO"
-        return @()
     }
+    return @()
 }
 
 function Add-VMToInventory {
     param($VMName, $VMip)
     $inv = @(Get-VMInventory)
+    # Eliminar entrada anterior si existe (por si se recrea)
+    $inv = $inv | Where-Object { $_.Name -ne $VMName }
     $inv += [PSCustomObject]@{ Name = $VMName; IP = $VMip; Created = (Get-Date -Format "yyyy-MM-dd HH:mm:ss"); Status = "running" }
     $inv | ConvertTo-Json | Out-File $inventoryPath -Encoding UTF8
-    Write-Log "Inventario actualizado con VM $VMName (IP $VMip)" "INFO"
 }
 
 $IP_BASE = "192.168.0"
@@ -70,31 +98,24 @@ $IP_START = 2
 $IP_END = 254
 
 function Get-NextIP {
-    # Leer inventario directamente (sin confiar en caché)
     $inv = Get-VMInventory
     $used = @()
     if ($inv -and $inv.Count -gt 0) {
         $used = $inv | ForEach-Object {
-            $ipStr = "$($_.IP)".Trim()
-            if ($ipStr -match '(\d+)$') {
-                [int]$matches[1]
-            } else {
-                Write-Log ("ADVERTENCIA: IP no válida en inventario: '$ipStr'") "WARN"
-                $null
+            if ($_.IP) {
+                $ipStr = "$($_.IP)".Trim()
+                if ($ipStr -match '(\d+)$') { [int]$matches[1] }
             }
-        }
-        # Eliminar nulos
-        $used = $used | Where-Object { $_ -ne $null }
+        } | Where-Object { $_ -ne $null }
     }
-    Write-Log ("DEBUG: IPs usadas detectadas: " + ($used -join ', ')) "INFO"
+    Write-Log ("DEBUG: IPs usadas = " + ($used -join ', ')) "INFO"
     for ($i = $IP_START; $i -le $IP_END; $i++) {
         if ($i -notin $used) {
             $nextIP = "$IP_BASE.$i"
-            Write-Log ("DEBUG: Siguiente IP libre: $nextIP") "INFO"
+            Write-Log ("DEBUG: Siguiente IP libre = $nextIP") "INFO"
             return $nextIP
         }
     }
-    Write-Log "ERROR: No hay IPs disponibles en el rango" "ERROR"
     return $null
 }
 
@@ -142,29 +163,25 @@ function New-EVENGvm {
     }
 }
 
-# Normalizar inventario existente (elimina espacios en IPs)
-Write-Log "Verificando integridad del inventario..." "INFO"
-$invNormalize = Get-VMInventory
-$cambios = $false
-foreach ($vm in $invNormalize) {
-    $ipOriginal = $vm.IP
-    $ipLimpia = "$($vm.IP)".Trim()
-    if ($ipOriginal -ne $ipLimpia) {
-        $vm.IP = $ipLimpia
-        $cambios = $true
-        Write-Log ("IP normalizada: de '$ipOriginal' a '$ipLimpia'") "INFO"
-    }
-}
-if ($cambios) {
-    $invNormalize | ConvertTo-Json | Out-File $inventoryPath -Encoding UTF8
-    Write-Log "Inventario normalizado (espacios eliminados)" "INFO"
-}
-
 Import-Module Hyper-V -ErrorAction Stop
+
+# Sincronizar inventario con las VMs reales de Hyper-V al arrancar
+Sync-InventoryWithHyperV | Out-Null
 
 $url = "http://+:$($CONFIG.ListenerPort)/"
 $listener = [System.Net.HttpListener]::new()
 $listener.Prefixes.Add($url)
+
+# Manejo de Ctrl+C
+$consoleHandler = [ConsoleCancelEventHandler]::new({
+    param($sender, $e)
+    Write-Host "`n[INFO] Ctrl+C detectado. Cerrando listener..."
+    $e.Cancel = $true
+    $listener.Stop()
+    Write-Host "[INFO] Listener detenido. Saliendo..."
+    [Environment]::Exit(0)
+})
+[Console]::CancelKeyPress += $consoleHandler
 
 try { $listener.Start() }
 catch {
@@ -174,7 +191,7 @@ catch {
 }
 
 Write-Host ""
-Write-Host "EVE-NG Lab - Listener activo" -ForegroundColor Cyan
+Write-Host "EVE-NG Lab - Listener activo (Ctrl+C para salir)" -ForegroundColor Cyan
 Write-Host ""
 Write-Log ("Listener iniciado en " + $url) "OK"
 Write-Log "Endpoints disponibles:" "INFO"
