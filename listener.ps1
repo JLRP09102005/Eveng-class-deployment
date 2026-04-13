@@ -30,8 +30,7 @@ $CONFIG = Get-Content $configPath | ConvertFrom-Json
 # ============================================================
 #  FUNCIONES DE LOG
 # ============================================================
-# Crear carpeta de logs si no existe
-$logFolder = "$($CONFIG.VMBasePath)\logs"
+$logFolder = Join-Path $CONFIG.VMBasePath "logs"
 if (-not (Test-Path $logFolder)) {
     New-Item -ItemType Directory -Path $logFolder -Force | Out-Null
 }
@@ -47,7 +46,8 @@ function Write-Log {
         default { "Cyan" }
     }
     Write-Host $line -ForegroundColor $color
-    $line | Out-File "$logFolder\listener.log" -Append -Encoding UTF8
+    $logFile = Join-Path $logFolder "listener.log"
+    $line | Out-File $logFile -Append -Encoding UTF8
 }
 
 function Send-Response {
@@ -63,7 +63,7 @@ function Send-Response {
 # ============================================================
 #  INVENTARIO DE VMs (fichero JSON simple)
 # ============================================================
-$inventoryPath = "$($CONFIG.VMBasePath)\inventory.json"
+$inventoryPath = Join-Path $CONFIG.VMBasePath "inventory.json"
 
 function Get-VMInventory {
     if (Test-Path $inventoryPath) {
@@ -84,26 +84,21 @@ function Add-VMToInventory {
         Created = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
         Status  = "running"
     }
-    $inv | ConvertTo-Json -Depth 10 | Out-File $inventoryPath -Encoding UTF8
+    $inv | ConvertTo-Json | Out-File $inventoryPath -Encoding UTF8
 }
 
 # ============================================================
 #  CONFIGURACION DE RANGO IP
 # ============================================================
-$IP_BASE  = "192.168.0"   # Tres primeros octetos de la red del aula
-$IP_START = 2             # Primera IP asignable (.1 es el gateway/host)
-$IP_END   = 254           # Ultima IP asignable
+$IP_BASE  = "192.168.0"
+$IP_START = 2
+$IP_END   = 254
 
-# ============================================================
-#  FUNCION: CALCULAR SIGUIENTE IP DISPONIBLE
-# ============================================================
 function Get-NextIP {
     $inv  = Get-VMInventory
     $used = @()
     if ($inv -and $inv.Count -gt 0) {
-        $used = @($inv | ForEach-Object { 
-            if ($_.IP) { [int]($_.IP -split '\.')[-1] } 
-        })
+        $used = $inv | ForEach-Object { if ($_.IP) { [int]($_.IP -split '\.')[-1] } }
     }
     for ($i = $IP_START; $i -le $IP_END; $i++) {
         if ($i -notin $used) { return "$IP_BASE.$i" }
@@ -115,74 +110,59 @@ function Get-NextIP {
 #  FUNCION: CREAR VM EN HYPER-V
 # ============================================================
 function New-EVENGvm {
-    param(
-        [string]$VMName,
-        [string]$VMip
-    )
+    param($VMName, $VMip)
 
-    # Comprobar que la VM no existe ya
     if (Get-VM -Name $VMName -ErrorAction SilentlyContinue) {
         return @{ success = $false; error = "Ya existe una VM con el nombre '$VMName'" }
     }
 
-    # Comprobar que la IP no esta en uso
     $inventory = Get-VMInventory
     if ($inventory | Where-Object { $_.IP -eq $VMip }) {
         return @{ success = $false; error = "La IP $VMip ya esta asignada a otra VM" }
     }
 
     try {
-        $vmPath  = "$($CONFIG.VMBasePath)\vms\$VMName"
-        $vhdPath = "$vmPath\$VMName-disk.vhdx"
+        $vmPath  = Join-Path $CONFIG.VMBasePath "vms\$VMName"
+        $vhdPath = Join-Path $vmPath "$VMName-disk.vhdx"
 
-        # Crear carpeta de la VM
         New-Item -ItemType Directory -Path $vmPath -Force | Out-Null
-
-        # Crear disco virtual
         New-VHD -Path $vhdPath -SizeBytes $CONFIG.VMDefaultDisk -Dynamic | Out-Null
 
-        # Crear la VM
-        $vm = New-VM -Name $VMName `
-            -MemoryStartupBytes $CONFIG.VMDefaultRAM `
-            -Generation 2 `
-            -VHDPath $vhdPath `
-            -SwitchName $CONFIG.SwitchName `
-            -Path $vmPath
+        # Crear VM sin usar backticks
+        $vmParams = @{
+            Name                    = $VMName
+            MemoryStartupBytes      = $CONFIG.VMDefaultRAM
+            Generation              = 2
+            VHDPath                 = $vhdPath
+            SwitchName              = $CONFIG.SwitchName
+            Path                    = $vmPath
+        }
+        $vm = New-VM @vmParams
 
-        # Configurar CPU y deshabilitar memoria dinamica
         Set-VMProcessor -VMName $VMName -Count $CONFIG.VMDefaultCPU
-        Set-VMMemory    -VMName $VMName -DynamicMemoryEnabled $false
-
-        # Habilitar virtualizacion anidada (necesaria para EVE-NG)
+        Set-VMMemory -VMName $VMName -DynamicMemoryEnabled $false
         Set-VMProcessor -VMName $VMName -ExposeVirtualizationExtensions $true
-
-        # Montar la ISO de Ubuntu
         Add-VMDvdDrive -VMName $VMName -Path $CONFIG.ISOPath
 
-        # Ajustar orden de arranque: DVD primero
         $dvd  = Get-VMDvdDrive -VMName $VMName
         $disk = Get-VMHardDiskDrive -VMName $VMName
         Set-VMFirmware -VMName $VMName -BootOrder $dvd, $disk
-
-        # Deshabilitar Secure Boot (necesario para Ubuntu)
         Set-VMFirmware -VMName $VMName -EnableSecureBoot Off
 
-        # Arrancar la VM
         Start-VM -Name $VMName
-
-        # Guardar en inventario
         Add-VMToInventory -VMName $VMName -VMip $VMip
 
         Write-Log "VM '$VMName' creada con IP $VMip" "OK"
         return @{ success = $true; name = $VMName; ip = $VMip; status = "running" }
-
-    } catch {
+    }
+    catch {
         Write-Log "Error creando VM '$VMName': $_" "ERROR"
-        # Limpiar si algo fallo a medias
         if (Get-VM -Name $VMName -ErrorAction SilentlyContinue) {
-            Remove-VM -Name $VMName -Force | Out-Null
+            Remove-VM -Name $VMName -Force
         }
-        if (Test-Path $vmPath) { Remove-Item $vmPath -Recurse -Force | Out-Null }
+        if (Test-Path $vmPath) {
+            Remove-Item $vmPath -Recurse -Force
+        }
         return @{ success = $false; error = $_.ToString() }
     }
 }
@@ -198,7 +178,8 @@ $listener.Prefixes.Add($url)
 
 try {
     $listener.Start()
-} catch {
+}
+catch {
     Write-Log "No se pudo iniciar el listener en $url : $_" "ERROR"
     Write-Log "Prueba a ejecutar como Administrador o comprueba que el puerto no esta en uso." "WARN"
     exit 1
@@ -216,10 +197,8 @@ Write-Log "  GET  http://<IP-HOST>:$($CONFIG.ListenerPort)/status" "INFO"
 Write-Log "  GET  http://<IP-HOST>:$($CONFIG.ListenerPort)/health" "INFO"
 Write-Host ""
 
-# Bucle principal
 while ($listener.IsListening) {
     try {
-        # Esperar peticion (bloqueante)
         $context  = $listener.GetContext()
         $request  = $context.Request
         $response = $context.Response
@@ -228,72 +207,67 @@ while ($listener.IsListening) {
 
         Write-Log "$method $path desde $($request.RemoteEndPoint.Address)" "INFO"
 
-        # ── GET /health ──────────────────────────────────────
+        # GET /health
         if ($method -eq "GET" -and $path -eq "/health") {
             Send-Response $response 200 '{"status":"ok"}'
             continue
         }
 
-        # ── GET /status ──────────────────────────────────────
+        # GET /status
         if ($method -eq "GET" -and $path -eq "/status") {
             $inv  = Get-VMInventory
-            $body = $inv | ConvertTo-Json -Depth 10
+            $body = $inv | ConvertTo-Json
             if (-not $body) { $body = "[]" }
             Send-Response $response 200 $body
             continue
         }
 
-        # ── POST /create-vm ──────────────────────────────────
+        # POST /create-vm
         if ($method -eq "POST" -and $path -eq "/create-vm") {
-
-            # Leer body JSON
             $reader = [System.IO.StreamReader]::new($request.InputStream)
             $rawBody = $reader.ReadToEnd()
             $reader.Close()
 
             try {
                 $data = $rawBody | ConvertFrom-Json
-            } catch {
+            }
+            catch {
                 Send-Response $response 400 '{"error":"JSON invalido en el body"}'
                 continue
             }
 
-            # Validar campo obligatorio
             if (-not $data.name) {
-                Send-Response $response 400 '{"error":"Campo requerido: name"}' 
+                Send-Response $response 400 '{"error":"Campo requerido: name"}'
                 continue
             }
 
-            # Validar formato del nombre (solo letras, numeros y guion)
             if ($data.name -notmatch '^[a-zA-Z0-9\-]+$') {
-                Send-Response $response 400 '{"error":"Nombre invalido. Solo letras, numeros y guiones."}' 
+                Send-Response $response 400 '{"error":"Nombre invalido. Solo letras, numeros y guiones."}'
                 continue
             }
 
-            # Calcular siguiente IP disponible automaticamente
             $nextIP = Get-NextIP
             if (-not $nextIP) {
-                Send-Response $response 503 '{"error":"Rango de IPs agotado. Contacta con el profesor."}' 
+                Send-Response $response 503 '{"error":"Rango de IPs agotado. Contacta con el profesor."}'
                 continue
             }
 
-            # Crear la VM con IP asignada automaticamente
             $result = New-EVENGvm -VMName $data.name -VMip $nextIP
 
             if ($result.success) {
-                $body = $result | ConvertTo-Json -Depth 10
+                $body = $result | ConvertTo-Json
                 Send-Response $response 201 $body
-            } else {
-                $body = @{ error = $result.error } | ConvertTo-Json -Depth 10
+            }
+            else {
+                $body = @{ error = $result.error } | ConvertTo-Json
                 Send-Response $response 409 $body
             }
             continue
         }
 
-        # ── Ruta no encontrada ────────────────────────────────
         Send-Response $response 404 '{"error":"Endpoint no encontrado"}'
-
-    } catch {
+    }
+    catch {
         Write-Log "Error en el bucle del listener: $_" "ERROR"
     }
 }
