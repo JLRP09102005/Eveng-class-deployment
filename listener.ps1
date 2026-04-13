@@ -30,6 +30,12 @@ $CONFIG = Get-Content $configPath | ConvertFrom-Json
 # ============================================================
 #  FUNCIONES DE LOG
 # ============================================================
+# Crear carpeta de logs si no existe
+$logFolder = "$($CONFIG.VMBasePath)\logs"
+if (-not (Test-Path $logFolder)) {
+    New-Item -ItemType Directory -Path $logFolder -Force | Out-Null
+}
+
 function Write-Log {
     param($msg, $level = "INFO")
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
@@ -41,7 +47,7 @@ function Write-Log {
         default { "Cyan" }
     }
     Write-Host $line -ForegroundColor $color
-    $line | Out-File "$($CONFIG.VMBasePath)\logs\listener.log" -Append -Encoding UTF8
+    $line | Out-File "$logFolder\listener.log" -Append -Encoding UTF8
 }
 
 function Send-Response {
@@ -52,6 +58,57 @@ function Send-Response {
     $response.ContentLength64 = $bytes.Length
     $response.OutputStream.Write($bytes, 0, $bytes.Length)
     $response.OutputStream.Close()
+}
+
+# ============================================================
+#  INVENTARIO DE VMs (fichero JSON simple)
+# ============================================================
+$inventoryPath = "$($CONFIG.VMBasePath)\inventory.json"
+
+function Get-VMInventory {
+    if (Test-Path $inventoryPath) {
+        $content = Get-Content $inventoryPath -Raw -ErrorAction SilentlyContinue
+        if ($content) {
+            return $content | ConvertFrom-Json
+        }
+    }
+    return @()
+}
+
+function Add-VMToInventory {
+    param($VMName, $VMip)
+    $inv = @(Get-VMInventory)
+    $inv += [PSCustomObject]@{
+        Name    = $VMName
+        IP      = $VMip
+        Created = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+        Status  = "running"
+    }
+    $inv | ConvertTo-Json -Depth 10 | Out-File $inventoryPath -Encoding UTF8
+}
+
+# ============================================================
+#  CONFIGURACION DE RANGO IP
+# ============================================================
+$IP_BASE  = "192.168.0"   # Tres primeros octetos de la red del aula
+$IP_START = 2             # Primera IP asignable (.1 es el gateway/host)
+$IP_END   = 254           # Ultima IP asignable
+
+# ============================================================
+#  FUNCION: CALCULAR SIGUIENTE IP DISPONIBLE
+# ============================================================
+function Get-NextIP {
+    $inv  = Get-VMInventory
+    $used = @()
+    if ($inv -and $inv.Count -gt 0) {
+        $used = @($inv | ForEach-Object { 
+            if ($_.IP) { [int]($_.IP -split '\.')[-1] } 
+        })
+    }
+    for ($i = $IP_START; $i -le $IP_END; $i++) {
+        if ($i -notin $used) { return "$IP_BASE.$i" }
+    }
+    return $null
 }
 
 # ============================================================
@@ -131,49 +188,6 @@ function New-EVENGvm {
 }
 
 # ============================================================
-#  CONFIGURACION DE RANGO IP
-# ============================================================
-$IP_BASE  = "192.168.0"   # Tres primeros octetos de la red del aula
-$IP_START = 2             # Primera IP asignable (.1 es el gateway/host)
-$IP_END   = 254           # Ultima IP asignable
-
-# ============================================================
-#  FUNCION: CALCULAR SIGUIENTE IP DISPONIBLE
-# ============================================================
-function Get-NextIP {
-    $inv  = Get-VMInventory
-    $used = @($inv | ForEach-Object { [int]($_.IP -split '\.')[-1] })
-    for ($i = $IP_START; $i -le $IP_END; $i++) {
-        if ($i -notin $used) { return "$IP_BASE.$i" }
-    }
-    return $null
-}
-
-# ============================================================
-#  INVENTARIO DE VMs (fichero JSON simple)
-# ============================================================
-$inventoryPath = "$($CONFIG.VMBasePath)\inventory.json"
-
-function Get-VMInventory {
-    if (Test-Path $inventoryPath) {
-        return Get-Content $inventoryPath | ConvertFrom-Json
-    }
-    return @()
-}
-
-function Add-VMToInventory {
-    param($VMName, $VMip)
-    $inv = @(Get-VMInventory)
-    $inv += [PSCustomObject]@{
-        Name    = $VMName
-        IP      = $VMip
-        Created = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
-        Status  = "running"
-    }
-    $inv | ConvertTo-Json | Out-File $inventoryPath -Encoding UTF8
-}
-
-# ============================================================
 #  SERVIDOR HTTP
 # ============================================================
 Import-Module Hyper-V -ErrorAction Stop
@@ -223,7 +237,7 @@ while ($listener.IsListening) {
         # ── GET /status ──────────────────────────────────────
         if ($method -eq "GET" -and $path -eq "/status") {
             $inv  = Get-VMInventory
-            $body = $inv | ConvertTo-Json
+            $body = $inv | ConvertTo-Json -Depth 10
             if (-not $body) { $body = "[]" }
             Send-Response $response 200 $body
             continue
@@ -267,10 +281,10 @@ while ($listener.IsListening) {
             $result = New-EVENGvm -VMName $data.name -VMip $nextIP
 
             if ($result.success) {
-                $body = $result | ConvertTo-Json
+                $body = $result | ConvertTo-Json -Depth 10
                 Send-Response $response 201 $body
             } else {
-                $body = @{ error = $result.error } | ConvertTo-Json
+                $body = @{ error = $result.error } | ConvertTo-Json -Depth 10
                 Send-Response $response 409 $body
             }
             continue
