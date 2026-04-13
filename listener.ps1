@@ -30,14 +30,31 @@ function Send-Response {
     $response.OutputStream.Close()
 }
 
+# Ruta absoluta del inventario (usando la misma base que el resto)
 $inventoryPath = Join-Path $CONFIG.VMBasePath "inventory.json"
+Write-Log ("Inventario ubicado en: " + $inventoryPath) "INFO"
 
 function Get-VMInventory {
     if (Test-Path $inventoryPath) {
+        Write-Log "DEBUG: Leyendo inventario desde $inventoryPath" "INFO"
         $content = Get-Content $inventoryPath -Raw -ErrorAction SilentlyContinue
-        if ($content) { return $content | ConvertFrom-Json }
+        if ($content) {
+            try {
+                $data = $content | ConvertFrom-Json
+                Write-Log "DEBUG: Inventario leído correctamente. VMs: $($data.Count)" "INFO"
+                return $data
+            } catch {
+                Write-Log ("ERROR al convertir JSON: " + $_) "ERROR"
+                return @()
+            }
+        } else {
+            Write-Log "DEBUG: El archivo inventario está vacío" "WARN"
+            return @()
+        }
+    } else {
+        Write-Log "DEBUG: No existe el archivo de inventario, se creará al añadir primera VM" "INFO"
+        return @()
     }
-    return @()
 }
 
 function Add-VMToInventory {
@@ -45,29 +62,39 @@ function Add-VMToInventory {
     $inv = @(Get-VMInventory)
     $inv += [PSCustomObject]@{ Name = $VMName; IP = $VMip; Created = (Get-Date -Format "yyyy-MM-dd HH:mm:ss"); Status = "running" }
     $inv | ConvertTo-Json | Out-File $inventoryPath -Encoding UTF8
+    Write-Log "Inventario actualizado con VM $VMName (IP $VMip)" "INFO"
 }
 
 $IP_BASE = "192.168.0"
 $IP_START = 2
 $IP_END = 254
 
-# FUNCIÓN CORREGIDA: extrae el último octeto de forma robusta
 function Get-NextIP {
+    # Leer inventario directamente (sin confiar en caché)
     $inv = Get-VMInventory
     $used = @()
     if ($inv -and $inv.Count -gt 0) {
         $used = $inv | ForEach-Object {
             $ipStr = "$($_.IP)".Trim()
-            if ($ipStr -match '(\d+)$') { [int]$matches[1] }
+            if ($ipStr -match '(\d+)$') {
+                [int]$matches[1]
+            } else {
+                Write-Log ("ADVERTENCIA: IP no válida en inventario: '$ipStr'") "WARN"
+                $null
+            }
         }
+        # Eliminar nulos
+        $used = $used | Where-Object { $_ -ne $null }
     }
-    Write-Host "DEBUG: IPs usadas = $($used -join ', ')" -ForegroundColor Yellow
+    Write-Log ("DEBUG: IPs usadas detectadas: " + ($used -join ', ')) "INFO"
     for ($i = $IP_START; $i -le $IP_END; $i++) {
         if ($i -notin $used) {
-            Write-Host "DEBUG: Devolviendo $IP_BASE.$i" -ForegroundColor Green
-            return "$IP_BASE.$i"
+            $nextIP = "$IP_BASE.$i"
+            Write-Log ("DEBUG: Siguiente IP libre: $nextIP") "INFO"
+            return $nextIP
         }
     }
+    Write-Log "ERROR: No hay IPs disponibles en el rango" "ERROR"
     return $null
 }
 
@@ -116,6 +143,7 @@ function New-EVENGvm {
 }
 
 # Normalizar inventario existente (elimina espacios en IPs)
+Write-Log "Verificando integridad del inventario..." "INFO"
 $invNormalize = Get-VMInventory
 $cambios = $false
 foreach ($vm in $invNormalize) {
@@ -124,11 +152,12 @@ foreach ($vm in $invNormalize) {
     if ($ipOriginal -ne $ipLimpia) {
         $vm.IP = $ipLimpia
         $cambios = $true
+        Write-Log ("IP normalizada: de '$ipOriginal' a '$ipLimpia'") "INFO"
     }
 }
 if ($cambios) {
     $invNormalize | ConvertTo-Json | Out-File $inventoryPath -Encoding UTF8
-    Write-Log "Inventario normalizado (espacios eliminados de IPs)" "INFO"
+    Write-Log "Inventario normalizado (espacios eliminados)" "INFO"
 }
 
 Import-Module Hyper-V -ErrorAction Stop
