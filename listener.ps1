@@ -98,11 +98,10 @@ function Get-VMInventory {
 
 function Add-VMToInventory {
     param($VMName, $VMip)
-    $inv = @(Get-VMInventory)   # Aseguramos array
+    $inv = @(Get-VMInventory)   # Fuerza array
     $inv = $inv | Where-Object { $_.Name -ne $VMName }
     $inv += [PSCustomObject]@{ Name = $VMName; IP = $VMip; Created = (Get-Date -Format "yyyy-MM-dd HH:mm:ss"); Status = "running" }
     $inv | ConvertTo-Json | Out-File $inventoryPath -Encoding UTF8
-    Write-Log "Inventario actualizado: $VMName -> $VMip" "INFO"
 }
 
 $IP_BASE = "192.168.0"
