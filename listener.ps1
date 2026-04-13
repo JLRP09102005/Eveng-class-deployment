@@ -58,13 +58,13 @@ function Get-NextIP {
     if ($inv -and $inv.Count -gt 0) {
         $used = $inv | ForEach-Object {
             $ipStr = "$($_.IP)".Trim()
-            if ($ipStr -match '(\d+)$') {
-                [int]$matches[1]
-            }
+            if ($ipStr -match '(\d+)$') { [int]$matches[1] }
         }
     }
+    Write-Host "DEBUG: IPs usadas = $($used -join ', ')" -ForegroundColor Yellow
     for ($i = $IP_START; $i -le $IP_END; $i++) {
         if ($i -notin $used) {
+            Write-Host "DEBUG: Devolviendo $IP_BASE.$i" -ForegroundColor Green
             return "$IP_BASE.$i"
         }
     }
