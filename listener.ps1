@@ -34,7 +34,7 @@ function Send-Response {
 
 $inventoryPath = Join-Path $CONFIG.VMBasePath "inventory.json"
 
-# Función que siempre devuelve un inventario válido (si el archivo está corrupto, lo reconstruye desde Hyper-V)
+# Función que siempre devuelve un ARRAY (aunque haya 0 o 1 elemento)
 function Get-VMInventory {
     $reconstruir = $false
     $inv = @()
@@ -42,13 +42,15 @@ function Get-VMInventory {
         try {
             $content = Get-Content $inventoryPath -Raw -ErrorAction Stop
             if ($content.Trim() -ne "") {
-                $inv = $content | ConvertFrom-Json
-                if ($inv -is [array]) { 
-                    Write-Log "DEBUG: Inventario cargado desde archivo ($($inv.Count) VMs)" "INFO"
-                } else { $reconstruir = $true }
+                $data = $content | ConvertFrom-Json
+                # Forzar a que sea un array
+                if ($data -is [array]) { $inv = $data }
+                elseif ($data -is [PSCustomObject]) { $inv = @($data) }
+                else { $reconstruir = $true }
+                Write-Log "DEBUG: Inventario cargado desde archivo ($($inv.Count) VMs)" "INFO"
             } else { $reconstruir = $true }
         } catch {
-            Write-Log "ERROR al leer inventario: $_. Se reconstruirá." "WARN"
+            Write-Log "ERROR al leer inventario: $_ . Se reconstruirá." "WARN"
             $reconstruir = $true
         }
     } else { $reconstruir = $true }
@@ -57,24 +59,46 @@ function Get-VMInventory {
         Write-Log "Reconstruyendo inventario desde Hyper-V..." "INFO"
         $vms = Get-VM | Where-Object { $_.Name -ne "" }
         $inv = @()
-        foreach ($vm in $vms) {
-            $inv += [PSCustomObject]@{
-                Name    = $vm.Name
-                IP      = $null
-                Created = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
-                Status  = $vm.State
+        # Primero, obtener las IPs ya usadas en el inventario actual (si existe algo)
+        $usedIPs = @()
+        if (Test-Path $inventoryPath) {
+            $old = Get-Content $inventoryPath -Raw | ConvertFrom-Json
+            if ($old) {
+                $usedIPs = @($old | Where-Object { $_.IP } | ForEach-Object { $_.IP })
             }
         }
-        # Guardar el inventario reconstruido (sin IPs todavía)
+        # Asignar IP a cada VM existente
+        foreach ($vm in $vms) {
+            $existing = $inv | Where-Object { $_.Name -eq $vm.Name }
+            if (-not $existing) {
+                # Buscar si la VM ya tenía IP en el inventario anterior
+                $oldEntry = @($old | Where-Object { $_.Name -eq $vm.Name })[0]
+                if ($oldEntry -and $oldEntry.IP) {
+                    $ip = $oldEntry.IP
+                } else {
+                    # Asignar nueva IP
+                    $ip = Get-NextIP -usedIPs $usedIPs
+                    if ($ip) { $usedIPs += $ip }
+                    else { $ip = $null }
+                }
+                $inv += [PSCustomObject]@{
+                    Name    = $vm.Name
+                    IP      = $ip
+                    Created = if ($oldEntry) { $oldEntry.Created } else { (Get-Date -Format "yyyy-MM-dd HH:mm:ss") }
+                    Status  = $vm.State
+                }
+            }
+        }
+        # Guardar el inventario reconstruido
         $inv | ConvertTo-Json | Out-File $inventoryPath -Encoding UTF8
-        Write-Log "Inventario reconstruido con $($inv.Count) VMs (sin IPs asignadas)" "INFO"
+        Write-Log "Inventario reconstruido con $($inv.Count) VMs" "INFO"
     }
     return $inv
 }
 
 function Add-VMToInventory {
     param($VMName, $VMip)
-    $inv = @(Get-VMInventory)
+    $inv = @(Get-VMInventory)   # Aseguramos array
     $inv = $inv | Where-Object { $_.Name -ne $VMName }
     $inv += [PSCustomObject]@{ Name = $VMName; IP = $VMip; Created = (Get-Date -Format "yyyy-MM-dd HH:mm:ss"); Status = "running" }
     $inv | ConvertTo-Json | Out-File $inventoryPath -Encoding UTF8
@@ -86,26 +110,32 @@ $IP_START = 2
 $IP_END = 254
 
 function Get-NextIP {
-    $inv = Get-VMInventory
-    $used = @()
-    if ($inv -and $inv.Count -gt 0) {
-        $used = $inv | ForEach-Object {
-            if ($_.IP) {
-                $ipStr = "$($_.IP)".Trim()
-                if ($ipStr -match '(\d+)$') { [int]$matches[1] }
-            }
-        } | Where-Object { $_ -ne $null }
+    param($usedIPs = $null)
+    if ($usedIPs -eq $null) {
+        $inv = Get-VMInventory
+        $usedIPs = @($inv | Where-Object { $_.IP } | ForEach-Object { $_.IP })
     }
-    Write-Log "DEBUG: IPs usadas = ($($used -join ', '))" "INFO"
+    $usedOctets = @()
+    foreach ($ip in $usedIPs) {
+        $ipStr = "$ip".Trim()
+        if ($ipStr -match '(\d+)$') { $usedOctets += [int]$matches[1] }
+    }
+    Write-Log "DEBUG: IPs usadas = ($($usedOctets -join ', '))" "INFO"
     for ($i = $IP_START; $i -le $IP_END; $i++) {
-        if ($i -notin $used) {
+        if ($i -notin $usedOctets) {
             $nextIP = "$IP_BASE.$i"
             Write-Log "DEBUG: Siguiente IP libre = $nextIP" "INFO"
             return $nextIP
         }
     }
-    Write-Log "ERROR: No hay IPs libres en el rango" "ERROR"
     return $null
+}
+
+function Test-HyperVService {
+    $service = Get-Service -Name vmms -ErrorAction SilentlyContinue
+    if ($service -and $service.Status -eq 'Running') { return $true }
+    Write-Log "El servicio Hyper-V Virtual Machine Management (vmms) no está corriendo" "ERROR"
+    return $false
 }
 
 function New-EVENGvm {
@@ -116,6 +146,10 @@ function New-EVENGvm {
     $inventory = Get-VMInventory
     if ($inventory | Where-Object { $_.IP -eq $VMip }) {
         return @{ success = $false; error = "La IP $VMip ya esta asignada a otra VM" }
+    }
+    # Verificar que Hyper-V esté funcionando
+    if (-not (Test-HyperVService)) {
+        return @{ success = $false; error = "El servicio de Hyper-V no está disponible. Inicia el servicio 'Hyper-V Virtual Machine Management'." }
     }
     try {
         $vmPath = Join-Path $CONFIG.VMBasePath "vms\$VMName"
@@ -146,6 +180,7 @@ function New-EVENGvm {
     }
     catch {
         Write-Log ("Error creando VM '" + $VMName + "': " + $_) "ERROR"
+        # Limpieza parcial
         if (Get-VM -Name $VMName -ErrorAction SilentlyContinue) { Remove-VM -Name $VMName -Force }
         if (Test-Path $vmPath) { Remove-Item $vmPath -Recurse -Force }
         return @{ success = $false; error = $_.ToString() }
@@ -154,7 +189,7 @@ function New-EVENGvm {
 
 Import-Module Hyper-V -ErrorAction Stop
 
-# Al inicio, forzamos que Get-VMInventory reconstruya si es necesario
+# Forzar la reconstrucción inicial del inventario y asignar IPs a VMs existentes
 $null = Get-VMInventory
 
 $url = "http://+:$($CONFIG.ListenerPort)/"
@@ -171,9 +206,9 @@ Write-Host ""
 Write-Host "EVE-NG Lab - Listener activo" -ForegroundColor Cyan
 Write-Log ("Listener iniciado en " + $url) "OK"
 Write-Log "Endpoints:" "INFO"
-Write-Log ("  POST /create-vm") "INFO"
-Write-Log ("  GET /status") "INFO"
-Write-Log ("  GET /health") "INFO"
+Write-Log "  POST /create-vm" "INFO"
+Write-Log "  GET  /status" "INFO"
+Write-Log "  GET  /health" "INFO"
 Write-Host ""
 
 while ($listener.IsListening) {
@@ -194,29 +229,25 @@ while ($listener.IsListening) {
         if ($method -eq "GET" -and $path -eq "/status") {
             $inv = Get-VMInventory
             $body = $inv | ConvertTo-Json
-            if (-not $body) { $body = "[]" }
             Send-Response $response 200 $body
             continue
         }
 
         if ($method -eq "POST" -and $path -eq "/create-vm") {
-            # Lectura segura del body (tolera desconexiones prematuras)
             $rawBody = ""
             try {
                 $reader = [System.IO.StreamReader]::new($request.InputStream)
                 $rawBody = $reader.ReadToEnd()
                 $reader.Close()
             } catch {
-                Write-Log "Error leyendo body del cliente (probablemente cerró conexión): $_" "WARN"
+                Write-Log "Error leyendo body: $_" "WARN"
                 Send-Response $response 400 '{"error":"Error al leer la petición"}'
                 continue
             }
-
             if ([string]::IsNullOrWhiteSpace($rawBody)) {
                 Send-Response $response 400 '{"error":"Body vacío"}'
                 continue
             }
-
             try { $data = $rawBody | ConvertFrom-Json }
             catch { Send-Response $response 400 '{"error":"JSON inválido"}'; continue }
 
