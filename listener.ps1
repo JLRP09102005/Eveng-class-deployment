@@ -51,11 +51,23 @@ $IP_BASE = "192.168.0"
 $IP_START = 2
 $IP_END = 254
 
+# FUNCIÓN CORREGIDA: extrae el último octeto de forma robusta
 function Get-NextIP {
     $inv = Get-VMInventory
     $used = @()
-    if ($inv -and $inv.Count -gt 0) { $used = $inv | ForEach-Object { if ($_.IP) { [int]($_.IP -split '\.')[-1] } } }
-    for ($i = $IP_START; $i -le $IP_END; $i++) { if ($i -notin $used) { return "$IP_BASE.$i" } }
+    if ($inv -and $inv.Count -gt 0) {
+        $used = $inv | ForEach-Object {
+            $ipStr = "$($_.IP)".Trim()
+            if ($ipStr -match '(\d+)$') {
+                [int]$matches[1]
+            }
+        }
+    }
+    for ($i = $IP_START; $i -le $IP_END; $i++) {
+        if ($i -notin $used) {
+            return "$IP_BASE.$i"
+        }
+    }
     return $null
 }
 
@@ -101,6 +113,22 @@ function New-EVENGvm {
         if (Test-Path $vmPath) { Remove-Item $vmPath -Recurse -Force }
         return @{ success = $false; error = $_.ToString() }
     }
+}
+
+# Normalizar inventario existente (elimina espacios en IPs)
+$invNormalize = Get-VMInventory
+$cambios = $false
+foreach ($vm in $invNormalize) {
+    $ipOriginal = $vm.IP
+    $ipLimpia = "$($vm.IP)".Trim()
+    if ($ipOriginal -ne $ipLimpia) {
+        $vm.IP = $ipLimpia
+        $cambios = $true
+    }
+}
+if ($cambios) {
+    $invNormalize | ConvertTo-Json | Out-File $inventoryPath -Encoding UTF8
+    Write-Log "Inventario normalizado (espacios eliminados de IPs)" "INFO"
 }
 
 Import-Module Hyper-V -ErrorAction Stop
