@@ -1,4 +1,4 @@
-#Requires -RunAsAdministrator
+﻿#Requires -RunAsAdministrator
 <#
 .SYNOPSIS
     Bloque 2 — Listener HTTP + creador de VMs EVE-NG en Hyper-V
@@ -52,7 +52,6 @@ function Send-Response {
 $inventoryPath = Join-Path $CONFIG.VMBasePath "inventory.json"
 Write-Log "Inventario en: $inventoryPath" "INFO"
 
-# Función que SIEMPRE devuelve un array (nunca $null ni un objeto suelto)
 function Get-Inventory {
     if (Test-Path $inventoryPath) {
         $content = Get-Content $inventoryPath -Raw -ErrorAction SilentlyContinue
@@ -240,7 +239,8 @@ while ($listener.IsListening) {
         Send-Response $response 404 '{"error":"Endpoint no encontrado"}'
     }
     catch {
-        # Línea corregida: concatenación para evitar problemas con comillas
-        Write-Log ("Error en bucle: " + $_) "ERROR"
+        # CORREGIDO: Evitamos concatenar $_ directamente
+        $errMsg = $_.Exception.Message
+        Write-Log "Error en bucle: $errMsg" "ERROR"
     }
 }
