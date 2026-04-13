@@ -128,7 +128,6 @@ function New-EVENGvm {
         New-Item -ItemType Directory -Path $vmPath -Force | Out-Null
         New-VHD -Path $vhdPath -SizeBytes $CONFIG.VMDefaultDisk -Dynamic | Out-Null
 
-        # Crear VM sin usar backticks
         $vmParams = @{
             Name                    = $VMName
             MemoryStartupBytes      = $CONFIG.VMDefaultRAM
@@ -156,7 +155,7 @@ function New-EVENGvm {
         return @{ success = $true; name = $VMName; ip = $VMip; status = "running" }
     }
     catch {
-        Write-Log "Error creando VM '$VMName': $_" "ERROR"
+        Write-Log ("Error creando VM '" + $VMName + "': " + $_) "ERROR"
         if (Get-VM -Name $VMName -ErrorAction SilentlyContinue) {
             Remove-VM -Name $VMName -Force
         }
@@ -180,7 +179,7 @@ try {
     $listener.Start()
 }
 catch {
-    Write-Log "No se pudo iniciar el listener en $url : $_" "ERROR"
+    Write-Log ("No se pudo iniciar el listener en " + $url + " : " + $_) "ERROR"
     Write-Log "Prueba a ejecutar como Administrador o comprueba que el puerto no esta en uso." "WARN"
     exit 1
 }
@@ -190,11 +189,11 @@ Write-Host "╔═════════════════════�
 Write-Host "║   EVE-NG Lab — Bloque 2: Listener activo    ║" -ForegroundColor Cyan
 Write-Host "╚══════════════════════════════════════════════╝" -ForegroundColor Cyan
 Write-Host ""
-Write-Log "Listener iniciado en $url" "OK"
+Write-Log ("Listener iniciado en " + $url) "OK"
 Write-Log "Endpoints disponibles:" "INFO"
-Write-Log "  POST http://<IP-HOST>:$($CONFIG.ListenerPort)/create-vm" "INFO"
-Write-Log "  GET  http://<IP-HOST>:$($CONFIG.ListenerPort)/status" "INFO"
-Write-Log "  GET  http://<IP-HOST>:$($CONFIG.ListenerPort)/health" "INFO"
+Write-Log ("  POST http://<IP-HOST>:" + $CONFIG.ListenerPort + "/create-vm") "INFO"
+Write-Log ("  GET  http://<IP-HOST>:" + $CONFIG.ListenerPort + "/status") "INFO"
+Write-Log ("  GET  http://<IP-HOST>:" + $CONFIG.ListenerPort + "/health") "INFO"
 Write-Host ""
 
 while ($listener.IsListening) {
@@ -205,7 +204,7 @@ while ($listener.IsListening) {
         $method   = $request.HttpMethod
         $path     = $request.Url.AbsolutePath
 
-        Write-Log "$method $path desde $($request.RemoteEndPoint.Address)" "INFO"
+        Write-Log ($method + " " + $path + " desde " + $request.RemoteEndPoint.Address) "INFO"
 
         # GET /health
         if ($method -eq "GET" -and $path -eq "/health") {
@@ -268,6 +267,7 @@ while ($listener.IsListening) {
         Send-Response $response 404 '{"error":"Endpoint no encontrado"}'
     }
     catch {
-        Write-Log "Error en el bucle del listener: $_" "ERROR"
+        # Línea crítica: usamos concatenación para evitar problemas de parsing
+        Write-Log ("Error en el bucle del listener: " + $_) "ERROR"
     }
 }
