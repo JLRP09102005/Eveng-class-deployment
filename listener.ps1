@@ -32,47 +32,6 @@ function Send-Response {
 
 $inventoryPath = Join-Path $CONFIG.VMBasePath "inventory.json"
 
-# Función que sincroniza el inventario con las VMs reales de Hyper-V
-function Sync-InventoryWithHyperV {
-    Write-Log "Sincronizando inventario con Hyper-V..." "INFO"
-    $vms = Get-VM | Where-Object { $_.Name -ne "" } | Select-Object Name, State
-    $inventory = @()
-    
-    # Intentar cargar inventario existente para conservar IPs asignadas previamente
-    $oldInventory = @()
-    if (Test-Path $inventoryPath) {
-        try {
-            $oldInventory = Get-Content $inventoryPath -Raw | ConvertFrom-Json
-        } catch { Write-Log "Inventario previo corrupto, se reconstruirá" "WARN" }
-    }
-    
-    foreach ($vm in $vms) {
-        # Buscar si la VM ya tenía IP asignada en el inventario antiguo
-        $oldEntry = $oldInventory | Where-Object { $_.Name -eq $vm.Name }
-        if ($oldEntry) {
-            $inventory += [PSCustomObject]@{
-                Name    = $vm.Name
-                IP      = $oldEntry.IP
-                Created = $oldEntry.Created
-                Status  = $vm.State
-            }
-        } else {
-            # VM nueva sin IP asignada aún, se asignará después
-            $inventory += [PSCustomObject]@{
-                Name    = $vm.Name
-                IP      = $null
-                Created = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
-                Status  = $vm.State
-            }
-        }
-    }
-    
-    # Guardar inventario sincronizado
-    $inventory | ConvertTo-Json | Out-File $inventoryPath -Encoding UTF8
-    Write-Log ("Inventario sincronizado. VMs encontradas: " + $vms.Count) "INFO"
-    return $inventory
-}
-
 function Get-VMInventory {
     if (Test-Path $inventoryPath) {
         $content = Get-Content $inventoryPath -Raw -ErrorAction SilentlyContinue
@@ -87,7 +46,6 @@ function Get-VMInventory {
 function Add-VMToInventory {
     param($VMName, $VMip)
     $inv = @(Get-VMInventory)
-    # Eliminar entrada anterior si existe (por si se recrea)
     $inv = $inv | Where-Object { $_.Name -ne $VMName }
     $inv += [PSCustomObject]@{ Name = $VMName; IP = $VMip; Created = (Get-Date -Format "yyyy-MM-dd HH:mm:ss"); Status = "running" }
     $inv | ConvertTo-Json | Out-File $inventoryPath -Encoding UTF8
@@ -163,25 +121,63 @@ function New-EVENGvm {
     }
 }
 
+# ============================================================
+#  IMPORTAR MÓDULO HYPER-V (antes de cualquier comando de Hyper-V)
+# ============================================================
 Import-Module Hyper-V -ErrorAction Stop
 
-# Sincronizar inventario con las VMs reales de Hyper-V al arrancar
-Sync-InventoryWithHyperV | Out-Null
+# ============================================================
+#  FUNCIÓN DE SINCRONIZACIÓN (ahora después del import)
+# ============================================================
+function Sync-InventoryWithHyperV {
+    Write-Log "Sincronizando inventario con Hyper-V..." "INFO"
+    $vms = Get-VM | Where-Object { $_.Name -ne "" }
+    Write-Log ("VMs encontradas en Hyper-V: " + ($vms | Select-Object -ExpandProperty Name) -join ', ') "INFO"
+    
+    $inventory = @()
+    $oldInventory = Get-VMInventory
+    
+    foreach ($vm in $vms) {
+        $oldEntry = $oldInventory | Where-Object { $_.Name -eq $vm.Name }
+        if ($oldEntry -and $oldEntry.IP) {
+            $inventory += [PSCustomObject]@{
+                Name    = $vm.Name
+                IP      = $oldEntry.IP
+                Created = $oldEntry.Created
+                Status  = $vm.State
+            }
+        } else {
+            # VM sin IP asignada aún (asignar IP automáticamente)
+            $newIP = Get-NextIP   # Esto leerá el inventario actual (aún sin esta VM)
+            if ($newIP) {
+                $inventory += [PSCustomObject]@{
+                    Name    = $vm.Name
+                    IP      = $newIP
+                    Created = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+                    Status  = $vm.State
+                }
+                Write-Log ("Asignada IP $newIP a VM existente '$($vm.Name)'") "INFO"
+            } else {
+                Write-Log ("No se pudo asignar IP a VM '$($vm.Name)' - rango agotado") "WARN"
+            }
+        }
+    }
+    
+    $inventory | ConvertTo-Json | Out-File $inventoryPath -Encoding UTF8
+    Write-Log ("Inventario sincronizado. Total VMs: " + $vms.Count) "INFO"
+}
 
+# ============================================================
+#  SINCRONIZAR AL INICIO
+# ============================================================
+Sync-InventoryWithHyperV
+
+# ============================================================
+#  INICIAR LISTENER
+# ============================================================
 $url = "http://+:$($CONFIG.ListenerPort)/"
 $listener = [System.Net.HttpListener]::new()
 $listener.Prefixes.Add($url)
-
-# Manejo de Ctrl+C
-$consoleHandler = [ConsoleCancelEventHandler]::new({
-    param($sender, $e)
-    Write-Host "`n[INFO] Ctrl+C detectado. Cerrando listener..."
-    $e.Cancel = $true
-    $listener.Stop()
-    Write-Host "[INFO] Listener detenido. Saliendo..."
-    [Environment]::Exit(0)
-})
-[Console]::CancelKeyPress += $consoleHandler
 
 try { $listener.Start() }
 catch {
@@ -191,7 +187,7 @@ catch {
 }
 
 Write-Host ""
-Write-Host "EVE-NG Lab - Listener activo (Ctrl+C para salir)" -ForegroundColor Cyan
+Write-Host "EVE-NG Lab - Listener activo" -ForegroundColor Cyan
 Write-Host ""
 Write-Log ("Listener iniciado en " + $url) "OK"
 Write-Log "Endpoints disponibles:" "INFO"
