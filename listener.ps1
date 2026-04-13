@@ -258,6 +258,6 @@ while ($listener.IsListening) {
         Send-Response $response 404 '{"error":"Endpoint no encontrado"}'
     }
     catch {
-        Write-Log "Error en bucle: $_" "ERROR"
+        Write-Log ("Error en bucle: " + $_) "ERROR"
     }
 }
