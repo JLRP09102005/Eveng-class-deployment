@@ -246,20 +246,20 @@ while ($listener.IsListening) {
 
             # Validar campo obligatorio
             if (-not $data.name) {
-                Send-Response $response 400 '{"error":"Campo requerido: name"}' 
+                Send-Response $response 400 '{"error":"Campo requerido: name"}'
                 continue
             }
 
             # Validar formato del nombre (solo letras, numeros y guion)
             if ($data.name -notmatch '^[a-zA-Z0-9\-]+$') {
-                Send-Response $response 400 '{"error":"Nombre invalido. Solo letras, numeros y guiones."}' 
+                Send-Response $response 400 '{"error":"Nombre invalido. Solo letras, numeros y guiones."}'
                 continue
             }
 
             # Calcular siguiente IP disponible automaticamente
             $nextIP = Get-NextIP
             if (-not $nextIP) {
-                Send-Response $response 503 '{"error":"Rango de IPs agotado. Contacta con el profesor."}' 
+                Send-Response $response 503 '{"error":"Rango de IPs agotado. Contacta con el profesor."}'
                 continue
             }
 
@@ -278,7 +278,6 @@ while ($listener.IsListening) {
 
         # ── Ruta no encontrada ────────────────────────────────
         Send-Response $response 404 '{"error":"Endpoint no encontrado"}'
-
     } catch {
         Write-Log "Error en el bucle del listener: $_" "ERROR"
     }
