@@ -35,16 +35,21 @@ function Send-Response {
 $inventoryPath = Join-Path $CONFIG.VMBasePath "inventory.json"
 Write-Log "Inventario en: $inventoryPath" "INFO"
 
-# Función para leer inventario (siempre devuelve un array)
+# Función que SIEMPRE devuelve un array (nunca $null ni un objeto suelto)
 function Get-Inventory {
     if (Test-Path $inventoryPath) {
         $content = Get-Content $inventoryPath -Raw -ErrorAction SilentlyContinue
         if ($content -and $content.Trim() -ne "") {
             try {
-                $data = $content | ConvertFrom-Json
-                if ($data -is [array]) { return $data }
-                elseif ($data -is [PSCustomObject]) { return @($data) }
-                else { return @() }
+                # Forzar a que sea array usando @() y asegurando que cualquier objeto se convierta en array de 1 elemento
+                $data = @( $content | ConvertFrom-Json )
+                # Si el array está vacío, devolver @()
+                if ($data.Count -eq 0) { return @() }
+                # Si el primer elemento es $null (por un JSON vacío) devolver @()
+                if ($data[0] -eq $null) { return @() }
+                # En caso de que $data sea un objeto suelto (no debería porque @() lo fuerza), lo envolvemos
+                if ($data -isnot [array]) { return @($data) }
+                return $data
             } catch {
                 Write-Log "Error al leer JSON: $_" "ERROR"
                 return @()
@@ -54,10 +59,13 @@ function Get-Inventory {
     return @()
 }
 
-# Función para guardar inventario
+# Función para guardar inventario (recibe un array)
 function Save-Inventory($inv) {
+    # Asegurar que $inv es un array
+    if ($inv -eq $null) { $inv = @() }
+    if ($inv -isnot [array]) { $inv = @($inv) }
     $inv | ConvertTo-Json | Out-File $inventoryPath -Encoding UTF8
-    Write-Log "Inventario guardado con $($inv.Count) entradas" "INFO"
+    Write-Log "Inventario guardado con $($inv.Count) entrada(s)" "INFO"
 }
 
 # Función para obtener siguiente IP libre
@@ -89,6 +97,8 @@ function New-VMFromRequest {
         return @{ success = $false; error = "Ya existe una VM con el nombre '$VMName'" }
     }
     $inv = Get-Inventory
+    # Asegurar que $inv es un array (doble verificación)
+    if ($inv -isnot [array]) { $inv = @($inv) }
     if ($inv | Where-Object { $_.IP -eq $VMip }) {
         return @{ success = $false; error = "La IP $VMip ya esta asignada a otra VM" }
     }
@@ -118,7 +128,8 @@ function New-VMFromRequest {
         try { Start-VM -Name $VMName -ErrorAction Stop }
         catch { Write-Log "VM creada pero no se pudo iniciar: $_" "WARN" }
         # Añadir al inventario
-        $inv += [PSCustomObject]@{ Name = $VMName; IP = $VMip; Created = (Get-Date -Format "yyyy-MM-dd HH:mm:ss"); Status = "created" }
+        $newEntry = [PSCustomObject]@{ Name = $VMName; IP = $VMip; Created = (Get-Date -Format "yyyy-MM-dd HH:mm:ss"); Status = "created" }
+        $inv += $newEntry
         Save-Inventory $inv
         Write-Log "VM '$VMName' creada con IP $VMip" "OK"
         return @{ success = $true; name = $VMName; ip = $VMip; status = "created" }
