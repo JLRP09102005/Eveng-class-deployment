@@ -58,13 +58,9 @@ function Get-Inventory {
         $content = Get-Content $inventoryPath -Raw -ErrorAction SilentlyContinue
         if ($content -and $content.Trim() -ne "") {
             try {
-                # Forzar a que sea array usando @() y asegurando que cualquier objeto se convierta en array de 1 elemento
                 $data = @( $content | ConvertFrom-Json )
-                # Si el array está vacío, devolver @()
                 if ($data.Count -eq 0) { return @() }
-                # Si el primer elemento es $null (por un JSON vacío) devolver @()
                 if ($data[0] -eq $null) { return @() }
-                # En caso de que $data sea un objeto suelto (no debería porque @() lo fuerza), lo envolvemos
                 if ($data -isnot [array]) { return @($data) }
                 return $data
             } catch {
@@ -76,16 +72,13 @@ function Get-Inventory {
     return @()
 }
 
-# Función para guardar inventario (recibe un array)
 function Save-Inventory($inv) {
-    # Asegurar que $inv es un array
     if ($inv -eq $null) { $inv = @() }
     if ($inv -isnot [array]) { $inv = @($inv) }
     $inv | ConvertTo-Json | Out-File $inventoryPath -Encoding UTF8
     Write-Log "Inventario guardado con $($inv.Count) entrada(s)" "INFO"
 }
 
-# Función para obtener siguiente IP libre
 function Get-NextIP {
     $inv = Get-Inventory
     $used = @()
@@ -107,14 +100,12 @@ function Get-NextIP {
     return $null
 }
 
-# Función para crear VM
 function New-VMFromRequest {
     param($VMName, $VMip)
     if (Get-VM -Name $VMName -ErrorAction SilentlyContinue) {
         return @{ success = $false; error = "Ya existe una VM con el nombre '$VMName'" }
     }
     $inv = Get-Inventory
-    # Asegurar que $inv es un array (doble verificación)
     if ($inv -isnot [array]) { $inv = @($inv) }
     if ($inv | Where-Object { $_.IP -eq $VMip }) {
         return @{ success = $false; error = "La IP $VMip ya esta asignada a otra VM" }
@@ -141,10 +132,8 @@ function New-VMFromRequest {
         $disk = Get-VMHardDiskDrive -VMName $VMName
         Set-VMFirmware -VMName $VMName -BootOrder $dvd, $disk
         Set-VMFirmware -VMName $VMName -EnableSecureBoot Off
-        # Intentar iniciar
         try { Start-VM -Name $VMName -ErrorAction Stop }
         catch { Write-Log "VM creada pero no se pudo iniciar: $_" "WARN" }
-        # Añadir al inventario
         $newEntry = [PSCustomObject]@{ Name = $VMName; IP = $VMip; Created = (Get-Date -Format "yyyy-MM-dd HH:mm:ss"); Status = "created" }
         $inv += $newEntry
         Save-Inventory $inv
@@ -161,7 +150,6 @@ function New-VMFromRequest {
 
 Import-Module Hyper-V -ErrorAction Stop
 
-# Sincronización inicial: añadir al inventario las VMs existentes que no tengan IP
 $vmsHyperV = Get-VM | Where-Object { $_.Name -ne "" }
 $inventory = Get-Inventory
 $changed = $false
@@ -183,9 +171,6 @@ catch {
     exit 1
 }
 
-# ============================================================
-#  PRESENTACIÓN VISUAL (banner y endpoints)
-# ============================================================
 Write-Host ""
 Write-Host "╔══════════════════════════════════════════════╗" -ForegroundColor Cyan
 Write-Host "║   EVE-NG Lab — Bloque 2: Listener activo    ║" -ForegroundColor Cyan
@@ -198,9 +183,6 @@ Write-Log "  GET  http://<IP-HOST>:$($CONFIG.ListenerPort)/status" "INFO"
 Write-Log "  GET  http://<IP-HOST>:$($CONFIG.ListenerPort)/health" "INFO"
 Write-Host ""
 
-# ============================================================
-#  BUCLE PRINCIPAL
-# ============================================================
 while ($listener.IsListening) {
     try {
         $context = $listener.GetContext()
@@ -258,6 +240,7 @@ while ($listener.IsListening) {
         Send-Response $response 404 '{"error":"Endpoint no encontrado"}'
     }
     catch {
+        # Línea corregida: concatenación para evitar problemas con comillas
         Write-Log ("Error en bucle: " + $_) "ERROR"
     }
 }
