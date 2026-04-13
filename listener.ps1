@@ -1,4 +1,21 @@
 #Requires -RunAsAdministrator
+<#
+.SYNOPSIS
+    Bloque 2 — Listener HTTP + creador de VMs EVE-NG en Hyper-V
+.DESCRIPTION
+    Servidor HTTP que escucha en el puerto 8080.
+    Los alumnos hacen POST /create-vm desde su navegador o terminal
+    y el script crea automaticamente una VM con la ISO de EVE-NG Community.
+
+    Endpoints:
+      POST /create-vm   { "name": "alumno-a" }  -> IP asignada automaticamente
+      GET  /status      -> lista de VMs creadas
+      GET  /health      -> ping de estado del servidor
+
+.NOTES
+    Uso: PowerShell como Admin -> .\listener.ps1
+    Detener: Ctrl+C (puede no responder, usar la X de la ventana)
+#>
 
 $configPath = "C:\HyperV\EVE-NG\lab-config.json"
 if (-not (Test-Path $configPath)) {
@@ -166,9 +183,24 @@ catch {
     exit 1
 }
 
-Write-Host "EVE-NG Lab - Listener activo" -ForegroundColor Cyan
+# ============================================================
+#  PRESENTACIÓN VISUAL (banner y endpoints)
+# ============================================================
+Write-Host ""
+Write-Host "╔══════════════════════════════════════════════╗" -ForegroundColor Cyan
+Write-Host "║   EVE-NG Lab — Bloque 2: Listener activo    ║" -ForegroundColor Cyan
+Write-Host "╚══════════════════════════════════════════════╝" -ForegroundColor Cyan
+Write-Host ""
 Write-Log "Listener iniciado en $url" "OK"
+Write-Log "Endpoints disponibles:" "INFO"
+Write-Log "  POST http://<IP-HOST>:$($CONFIG.ListenerPort)/create-vm" "INFO"
+Write-Log "  GET  http://<IP-HOST>:$($CONFIG.ListenerPort)/status" "INFO"
+Write-Log "  GET  http://<IP-HOST>:$($CONFIG.ListenerPort)/health" "INFO"
+Write-Host ""
 
+# ============================================================
+#  BUCLE PRINCIPAL
+# ============================================================
 while ($listener.IsListening) {
     try {
         $context = $listener.GetContext()
