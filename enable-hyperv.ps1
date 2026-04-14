@@ -151,7 +151,6 @@ try {
     if ($needsReboot) {
         Write-Warn "Modulo Hyper-V no disponible hasta reiniciar. El switch se creara tras reinicio."
 
-        # Registrar tarea programada para crear el switch post-reinicio
         $script = @"
 Import-Module Hyper-V
 if (-not (Get-VMSwitch -Name '$($CONFIG.SwitchName)' -ErrorAction SilentlyContinue)) {
@@ -199,7 +198,34 @@ if (Test-Path $CONFIG.ISOPath) {
 }
 
 # ============================================================
-#  PASO 7 — Regla de firewall para el listener
+#  PASO 7 — Registrar URL en HTTP.sys para peticiones externas
+# ============================================================
+Write-Step "Registrando URL en HTTP.sys (acceso externo al listener)..."
+
+$urlacl = netsh http show urlacl url="http://+:$($CONFIG.ListenerPort)/" 2>&1
+if ($urlacl -match "Reserved URL") {
+    Write-OK "URL ya registrada en HTTP.sys."
+} else {
+    try {
+        $result = netsh http add urlacl url="http://+:$($CONFIG.ListenerPort)/" user="Todos" 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            Write-OK "URL registrada: http://+:$($CONFIG.ListenerPort)/ para usuario 'Todos'."
+        } else {
+            # Intentar con "Everyone" por si el SO esta en ingles
+            $result = netsh http add urlacl url="http://+:$($CONFIG.ListenerPort)/" user="Everyone" 2>&1
+            if ($LASTEXITCODE -eq 0) {
+                Write-OK "URL registrada: http://+:$($CONFIG.ListenerPort)/ para usuario 'Everyone'."
+            } else {
+                Write-Fail "No se pudo registrar la URL en HTTP.sys: $result"
+            }
+        }
+    } catch {
+        Write-Fail "Error al ejecutar netsh: $_"
+    }
+}
+
+# ============================================================
+#  PASO 8 — Regla de firewall para el listener
 # ============================================================
 Write-Step "Configurando firewall de Windows..."
 $ruleName = "EVE-NG Lab Listener"
@@ -213,7 +239,7 @@ if (-not (Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContin
 }
 
 # ============================================================
-#  PASO 8 — Guardar configuracion para Bloque 2
+#  PASO 9 — Guardar configuracion para Bloque 2
 # ============================================================
 Write-Step "Guardando configuracion..."
 $configPath = "$($CONFIG.VMBasePath)\lab-config.json"
@@ -243,6 +269,7 @@ Write-Host "  Switch      : $($CONFIG.SwitchName)"
 Write-Host "  IP host     : $($CONFIG.HostIP)/$($CONFIG.SubnetPrefix)"
 Write-Host "  Red VMs     : $($CONFIG.VMSubnet)"
 Write-Host "  Puerto      : $($CONFIG.ListenerPort)"
+Write-Host "  URL HTTP.sys: http://+:$($CONFIG.ListenerPort)/"
 Write-Host "  Config JSON : $configPath"
 Write-Host "══════════════════════════════════════════════" -ForegroundColor Cyan
 
