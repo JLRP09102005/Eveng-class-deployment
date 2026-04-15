@@ -23,10 +23,10 @@ Write-Host "=== CONFIGURANDO GESTIÓN DE ENERGÍA ===" -ForegroundColor Cyan
 
 #region [Desactivar suspensiones e hibernación automática]
 Write-Host "`n📌 Desactivando timeouts automáticos..." -ForegroundColor Yellow
-powercfg /change standby-timeout-ac 0      # Nunca suspender en AC
-powercfg /change standby-timeout-dc 0      # Nunca suspender en batería
-powercfg /change hibernate-timeout-ac 0    # Nunca hibernar por tiempo en AC
-powercfg /change hibernate-timeout-dc 0    # Nunca hibernar por tiempo en batería
+powercfg /change standby-timeout-ac 0
+powercfg /change standby-timeout-dc 0
+powercfg /change hibernate-timeout-ac 0
+powercfg /change hibernate-timeout-dc 0
 Write-Host "✅ Suspensión e hibernación automática desactivadas." -ForegroundColor Green
 #endregion
 
@@ -44,7 +44,7 @@ if ($LASTEXITCODE -eq 0) {
 Write-Host "`n📌 Creando tarea programada: Hibernar a las 2:00 AM..." -ForegroundColor Yellow
 $hibernateTask = "HibernateAt2AM"
 $hibernateAction = "shutdown"
-$hibernateArgs = "/h /f"   # /h = hibernar, /f = forzar cierre de aplicaciones
+$hibernateArgs = "/h /f"
 try {
     schtasks /create /tn $hibernateTask /tr "$hibernateAction $hibernateArgs" /sc daily /st 02:00 /ru system /f | Out-Null
     if ($LASTEXITCODE -eq 0) {
@@ -60,7 +60,6 @@ try {
 #region [Programar despertador a las 7AM]
 Write-Host "`n📌 Creando tarea programada para despertar a las 7:00 AM..." -ForegroundColor Yellow
 $wakeTask = "WakeAt7AM"
-# Crear una tarea que ejecute un comando trivial y que pueda despertar el equipo
 $action = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/c echo Equipo despertado a las 7AM >> %TEMP%\wake_log.txt"
 $trigger = New-ScheduledTaskTrigger -Daily -At 07:00AM
 $settings = New-ScheduledTaskSettingsSet -WakeToRun -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
@@ -77,7 +76,6 @@ try {
 #region [Comprobar y activar Wake‑On‑LAN]
 Write-Host "`n📌 Comprobando adaptadores de red para Wake‑On‑LAN..." -ForegroundColor Yellow
 
-# Obtener adaptadores de red Ethernet (cableados)
 $adapters = Get-NetAdapter -Physical | Where-Object { $_.MediaType -eq "802.3" -and $_.Name -notlike "*Bluetooth*" -and $_.Name -notlike "*WiFi*" -and $_.Name -notlike "*Wireless*" }
 
 if (-not $adapters) {
@@ -85,21 +83,17 @@ if (-not $adapters) {
 } else {
     foreach ($adapter in $adapters) {
         Write-Host "`n🔌 Adaptador: $($adapter.Name) (Interface $($adapter.InterfaceDescription))" -ForegroundColor Cyan
-        # Verificar soporte de Wake‑On‑LAN mediante la propiedad 'WakeOnMagicPacket'
         $powerMgmt = Get-NetAdapterPowerManagement -Name $adapter.Name -ErrorAction SilentlyContinue
         if ($powerMgmt) {
             $wolSupported = $powerMgmt.WakeOnMagicPacketSupported
-            $wolEnabled = $powerMgmt.WakeOnMagicPacket
             Write-Host "   Wake on Magic Packet soportado: $wolSupported" -ForegroundColor Gray
             if ($wolSupported) {
-                # Activar Wake on Magic Packet
                 Set-NetAdapterPowerManagement -Name $adapter.Name -WakeOnMagicPacket Enabled -ErrorAction SilentlyContinue
                 if ($?) {
                     Write-Host "   ✅ Wake‑On‑LAN (Magic Packet) activado en este adaptador." -ForegroundColor Green
                 } else {
                     Write-Host "   ❌ No se pudo activar Wake‑On‑LAN. Prueba a deshabilitar 'Inicio rápido' en el Panel de Control." -ForegroundColor Red
                 }
-                # También activar 'Wake on Pattern Match' (para responder a peticiones de red)
                 Set-NetAdapterPowerManagement -Name $adapter.Name -WakeOnPattern Enabled -ErrorAction SilentlyContinue
             } else {
                 Write-Host "   ❌ Este adaptador no soporta Wake‑On‑LAN. No se puede activar." -ForegroundColor Red
@@ -115,5 +109,8 @@ Write-Host "`n=== CONFIGURACIÓN COMPLETADA ===" -ForegroundColor Green
 Write-Host "🔁 El equipo nunca se suspenderá ni hibernará automáticamente." -ForegroundColor White
 Write-Host "⏰ Hibernará cada día a las 2:00 AM y despertará a las 7:00 AM." -ForegroundColor White
 Write-Host "🌐 Wake‑On‑LAN activado en los adaptadores compatibles (para despertar remotamente)." -ForegroundColor White
+
+# --- LÍNEA CORREGIDA (asegúrate de que esté en una sola línea) ---
 Write-Host "`nRecomendación: Si el despertador automático no funciona, revisa la BIOS/UEFI y activa 'Resume by RTC Alarm' o similar." -ForegroundColor Yellow
+
 pause
