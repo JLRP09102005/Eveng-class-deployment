@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Configura el equipo para que no se suspenda/hiberne automáticamente,
     hiberne a las 2AM, despierte a las 7AM y active Wake‑On‑LAN.
