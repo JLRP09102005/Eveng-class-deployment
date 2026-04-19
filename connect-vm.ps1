@@ -1,1 +1,1 @@
-vmconnect.exe <HOST IP> -Name 'VM Name'
+﻿vmconnect.exe <HOST IP> -Name 'VM Name'
