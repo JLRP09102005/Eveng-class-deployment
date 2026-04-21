@@ -127,9 +127,9 @@ Write-Step "Creando estructura de directorios..."
 }
 
 # ============================================================
-#  PASO 5 — Crear switch virtual
+#  PASO 5 — Crear switch virtual externo (bridge con red del aula)
 # ============================================================
-Write-Step "Configurando switch virtual de Hyper-V..."
+Write-Step "Configurando switch virtual de Hyper-V (modo bridge)..."
 
 try {
     Import-Module Hyper-V -ErrorAction Stop
@@ -137,31 +137,49 @@ try {
     if (Get-VMSwitch -Name $CONFIG.SwitchName -ErrorAction SilentlyContinue) {
         Write-OK "Switch '$($CONFIG.SwitchName)' ya existe."
     } else {
-        New-VMSwitch -Name $CONFIG.SwitchName -SwitchType Internal | Out-Null
-        Write-OK "Switch interno '$($CONFIG.SwitchName)' creado."
+        # Buscar adaptador Ethernet fisico (excluir WiFi, Bluetooth y adaptadores virtuales)
+        $ethAdapter = Get-NetAdapter -Physical | Where-Object {
+            $_.Status -eq "Up" -and
+            $_.MediaType -eq "802.3" -and
+            $_.InterfaceDescription -notmatch "Wi-Fi|Wireless|WiFi|Bluetooth"
+        } | Select-Object -First 1
 
-        $adapter = Get-NetAdapter | Where-Object { $_.Name -like "*$($CONFIG.SwitchName)*" }
-        if ($adapter) {
-            New-NetIPAddress -InterfaceAlias $adapter.Name `
-                -IPAddress $CONFIG.HostIP -PrefixLength $CONFIG.SubnetPrefix | Out-Null
-            Write-OK "IP del host en red lab: $($CONFIG.HostIP)/$($CONFIG.SubnetPrefix)"
+        if (-not $ethAdapter) {
+            Write-Fail "No se encontro un adaptador Ethernet activo. Conecta el cable de red e intenta de nuevo."
+            exit 1
         }
+
+        Write-Host "    Adaptador detectado: $($ethAdapter.Name) ($($ethAdapter.InterfaceDescription))"
+
+        # Crear switch externo vinculado al adaptador Ethernet
+        # AllowManagementOS: el host comparte el adaptador y sigue teniendo red
+        New-VMSwitch -Name $CONFIG.SwitchName `
+            -NetAdapterName $ethAdapter.Name `
+            -AllowManagementOS $true | Out-Null
+
+        Write-OK "Switch externo '$($CONFIG.SwitchName)' creado en modo bridge."
+        Write-OK "Las VMs obtendran IP del DHCP de la red del aula."
+        Write-Warn "El host puede perder conectividad unos segundos mientras se reconfigura el adaptador."
     }
 } catch {
     if ($needsReboot) {
         Write-Warn "Modulo Hyper-V no disponible hasta reiniciar. El switch se creara tras reinicio."
 
-        $script = @"
+        $scriptPath = "$($CONFIG.VMBasePath)\post-reboot-switch.ps1"
+        $postScript = @"
 Import-Module Hyper-V
 if (-not (Get-VMSwitch -Name '$($CONFIG.SwitchName)' -ErrorAction SilentlyContinue)) {
-    New-VMSwitch -Name '$($CONFIG.SwitchName)' -SwitchType Internal
-    `$a = Get-NetAdapter | Where-Object { `$_.Name -like '*$($CONFIG.SwitchName)*' }
-    if (`$a) { New-NetIPAddress -InterfaceAlias `$a.Name -IPAddress '$($CONFIG.HostIP)' -PrefixLength $($CONFIG.SubnetPrefix) }
+    `$eth = Get-NetAdapter -Physical | Where-Object {
+        `$_.Status -eq 'Up' -and `$_.MediaType -eq '802.3' -and
+        `$_.InterfaceDescription -notmatch 'Wi-Fi|Wireless|WiFi|Bluetooth'
+    } | Select-Object -First 1
+    if (`$eth) {
+        New-VMSwitch -Name '$($CONFIG.SwitchName)' -NetAdapterName `$eth.Name -AllowManagementOS `$true
+    }
 }
 Unregister-ScheduledTask -TaskName 'EVE-NG-CreateSwitch' -Confirm:`$false
 "@
-        $scriptPath = "$($CONFIG.VMBasePath)\post-reboot-switch.ps1"
-        $script | Out-File $scriptPath -Encoding UTF8
+        $postScript | Out-File $scriptPath -Encoding UTF8
 
         $action  = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -File `"$scriptPath`""
         $trigger = New-ScheduledTaskTrigger -AtStartup
@@ -169,7 +187,8 @@ Unregister-ScheduledTask -TaskName 'EVE-NG-CreateSwitch' -Confirm:`$false
             -Trigger $trigger -RunLevel Highest -User "SYSTEM" -Force | Out-Null
         Write-OK "Tarea programada registrada para post-reinicio."
     } else {
-        Write-Fail "No se pudo cargar el modulo Hyper-V: $_"
+        $errMsg = $_.Exception.Message
+        Write-Fail "No se pudo crear el switch: $errMsg"
     }
 }
 
@@ -198,34 +217,7 @@ if (Test-Path $CONFIG.ISOPath) {
 }
 
 # ============================================================
-#  PASO 7 — Registrar URL en HTTP.sys para peticiones externas
-# ============================================================
-Write-Step "Registrando URL en HTTP.sys (acceso externo al listener)..."
-
-$urlacl = netsh http show urlacl url="http://+:$($CONFIG.ListenerPort)/" 2>&1
-if ($urlacl -match "Reserved URL") {
-    Write-OK "URL ya registrada en HTTP.sys."
-} else {
-    try {
-        $result = netsh http add urlacl url="http://+:$($CONFIG.ListenerPort)/" user="Todos" 2>&1
-        if ($LASTEXITCODE -eq 0) {
-            Write-OK "URL registrada: http://+:$($CONFIG.ListenerPort)/ para usuario 'Todos'."
-        } else {
-            # Intentar con "Everyone" por si el SO esta en ingles
-            $result = netsh http add urlacl url="http://+:$($CONFIG.ListenerPort)/" user="Everyone" 2>&1
-            if ($LASTEXITCODE -eq 0) {
-                Write-OK "URL registrada: http://+:$($CONFIG.ListenerPort)/ para usuario 'Everyone'."
-            } else {
-                Write-Fail "No se pudo registrar la URL en HTTP.sys: $result"
-            }
-        }
-    } catch {
-        Write-Fail "Error al ejecutar netsh: $_"
-    }
-}
-
-# ============================================================
-#  PASO 8 — Regla de firewall para el listener
+#  PASO 7 — Regla de firewall para el listener
 # ============================================================
 Write-Step "Configurando firewall de Windows..."
 $ruleName = "EVE-NG Lab Listener"
@@ -239,7 +231,7 @@ if (-not (Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContin
 }
 
 # ============================================================
-#  PASO 9 — Guardar configuracion para Bloque 2
+#  PASO 8 — Guardar configuracion para Bloque 2
 # ============================================================
 Write-Step "Guardando configuracion..."
 $configPath = "$($CONFIG.VMBasePath)\lab-config.json"
@@ -265,11 +257,8 @@ Write-Host "`n══════════════════════
 Write-Host "  RESUMEN" -ForegroundColor Cyan
 Write-Host "══════════════════════════════════════════════" -ForegroundColor Cyan
 Write-Host "  Host        : $env:COMPUTERNAME"
-Write-Host "  Switch      : $($CONFIG.SwitchName)"
-Write-Host "  IP host     : $($CONFIG.HostIP)/$($CONFIG.SubnetPrefix)"
-Write-Host "  Red VMs     : $($CONFIG.VMSubnet)"
+Write-Host "  Switch      : $($CONFIG.SwitchName) (bridge — DHCP del aula)"
 Write-Host "  Puerto      : $($CONFIG.ListenerPort)"
-Write-Host "  URL HTTP.sys: http://+:$($CONFIG.ListenerPort)/"
 Write-Host "  Config JSON : $configPath"
 Write-Host "══════════════════════════════════════════════" -ForegroundColor Cyan
 
