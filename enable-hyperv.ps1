@@ -1,4 +1,4 @@
-#Requires -RunAsAdministrator
+﻿#Requires -RunAsAdministrator
 <#
 .SYNOPSIS
     Bloque 1 — Preparacion del host Windows para EVE-NG via Hyper-V
