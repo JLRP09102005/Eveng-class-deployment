@@ -1,182 +1,274 @@
 #!/bin/bash
 # ============================================================
-#  setup-samba.sh — Configuracion inicial del servidor Ubuntu
-#  Ejecutar UNA sola vez como root tras instalar Ubuntu Server
+#  listener.sh — Servidor HTTP EVE-NG Lab
+#  Corre permanentemente como servicio systemd
 #
-#  Uso: sudo ./setup-samba.sh
+#  Endpoints:
+#    POST /create-vm  {folder, vmname, username, password}
+#    GET  /status     -> lista de shares activas
+#    GET  /health     -> ping
 # ============================================================
 
-set -euo pipefail
+set -uo pipefail
 
 # ── Cargar configuracion ─────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/server.conf"
 
-# ── Colores ──────────────────────────────────────────────────
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
-CYAN='\033[0;36m'; NC='\033[0m'
+# ── Log ──────────────────────────────────────────────────────
+log() {
+    local level="$1"; shift
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$level] $*" \
+        | tee -a "$LOGS_DIR/listener.log"
+}
 
-log_step() { echo -e "\n${CYAN}[*] $1${NC}"; }
-log_ok()   { echo -e "${GREEN}    [OK] $1${NC}"; }
-log_warn() { echo -e "${YELLOW}    [!!] $1${NC}"; }
-log_fail() { echo -e "${RED}    [ERROR] $1${NC}"; exit 1; }
+# ── Respuesta HTTP ───────────────────────────────────────────
+send_response() {
+    local fd="$1"
+    local status="$2"
+    local body="$3"
+    local len=${#body}
+    printf "HTTP/1.1 %s\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s" \
+        "$status" "$len" "$body" >&"$fd"
+}
 
-# ── Banner ───────────────────────────────────────────────────
-clear
-echo -e "${CYAN}"
-echo "╔══════════════════════════════════════════════╗"
-echo "║   EVE-NG Lab — Setup Ubuntu Server          ║"
-echo "╚══════════════════════════════════════════════╝"
-echo -e "${NC}"
+# ── Crear VM: copia plantilla y configura share ──────────────
+create_vm() {
+    local folder="$1"
+    local vmname="$2"
+    local username="$3"
+    local password="$4"
 
-# ── Paso 1: Verificar root ───────────────────────────────────
-log_step "Verificando permisos..."
-[[ $EUID -ne 0 ]] && log_fail "Ejecuta como root: sudo ./setup-samba.sh"
-log_ok "Corriendo como root."
+    local share_path="$SHARES_DIR/$folder"
 
-# ── Paso 2: Actualizar e instalar dependencias ───────────────
-log_step "Instalando dependencias..."
-apt-get update -qq
-apt-get install -y -qq samba samba-common-bin netcat-openbsd jq curl
-log_ok "Dependencias instaladas."
-
-# ── Paso 3: Crear estructura de directorios ──────────────────
-log_step "Creando estructura de directorios..."
-for dir in "$BASE_DIR" "$SHARES_DIR" "$TEMPLATE_DIR" "$LOGS_DIR"; do
-    if [[ ! -d "$dir" ]]; then
-        mkdir -p "$dir"
-        log_ok "Creado: $dir"
-    else
-        log_ok "Ya existe: $dir"
+    # Validar que no existen ya
+    if [[ -d "$share_path" ]]; then
+        echo '{"error":"La carpeta ya existe"}'
+        return 1
     fi
-done
 
-# ── Paso 4: Crear credentials.json protegido ─────────────────
-log_step "Creando fichero de credenciales..."
-if [[ ! -f "$CREDENTIALS_FILE" ]]; then
-    echo "[]" > "$CREDENTIALS_FILE"
+    if id "$username" &>/dev/null; then
+        echo '{"error":"El usuario ya existe en el sistema"}'
+        return 1
+    fi
+
+    # Comprobar que existe la plantilla
+    if [[ ! -f "$TEMPLATE_DIR/$TEMPLATE_VHDX" ]]; then
+        echo '{"error":"Plantilla .vhdx no encontrada en el servidor"}'
+        return 1
+    fi
+
+    log "INFO" "Creando VM para $username (folder: $folder, vmname: $vmname)"
+
+    # Crear usuario de sistema Linux (sin shell, solo para Samba)
+    useradd -M -s /usr/sbin/nologin "$username" 2>/dev/null || {
+        echo '{"error":"Error creando usuario del sistema"}'
+        return 1
+    }
+
+    # Establecer contrasena Samba para el usuario
+    printf "%s\n%s\n" "$password" "$password" | smbpasswd -a -s "$username" 2>/dev/null || {
+        userdel "$username" 2>/dev/null
+        echo '{"error":"Error configurando contrasena Samba"}'
+        return 1
+    }
+
+    # Crear carpeta de la share
+    mkdir -p "$share_path"
+    chown "$username":root "$share_path"
+    chmod 700 "$share_path"
+
+    # Copiar plantilla .vhdx con el nombre de la VM
+    log "INFO" "Copiando plantilla .vhdx -> $share_path/$vmname.vhdx"
+    cp "$TEMPLATE_DIR/$TEMPLATE_VHDX" "$share_path/$vmname.vhdx" || {
+        log "ERROR" "Error copiando plantilla"
+        rm -rf "$share_path"
+        userdel "$username" 2>/dev/null
+        echo '{"error":"Error copiando plantilla .vhdx"}'
+        return 1
+    }
+
+    # Copiar ISO de EVE-NG
+    log "INFO" "Copiando ISO -> $share_path/$TEMPLATE_ISO"
+    cp "$TEMPLATE_DIR/$TEMPLATE_ISO" "$share_path/$TEMPLATE_ISO" || {
+        log "WARN" "Error copiando ISO — continuando sin ella"
+    }
+
+    # Ajustar permisos de los ficheros
+    chown -R "$username":root "$share_path"
+    chmod 600 "$share_path/$vmname.vhdx"
+
+    # Añadir share a Samba
+    cat >> /etc/samba/shares.conf << EOF
+
+[$folder]
+    path = $share_path
+    valid users = $username
+    read only = no
+    browseable = no
+    create mask = 0600
+    directory mask = 0700
+    force user = $username
+EOF
+
+    # Recargar Samba sin interrumpir conexiones activas
+    smbcontrol smbd reload-config 2>/dev/null || systemctl reload smbd
+
+    # Guardar en credentials.json
+    local created_at
+    created_at=$(date '+%Y-%m-%d %H:%M:%S')
+    local new_entry
+    new_entry=$(jq -n \
+        --arg folder "$folder" \
+        --arg vmname "$vmname" \
+        --arg username "$username" \
+        --arg password "$password" \
+        --arg share "\\\\\\\\$SERVER_IP\\\\$folder" \
+        --arg created "$created_at" \
+        '{folder:$folder, vmname:$vmname, username:$username, password:$password, share:$share, created:$created}')
+
+    local tmp
+    tmp=$(mktemp)
+    jq --argjson entry "$new_entry" '. += [$entry]' "$CREDENTIALS_FILE" > "$tmp"
+    mv "$tmp" "$CREDENTIALS_FILE"
     chmod 600 "$CREDENTIALS_FILE"
-    chown root:root "$CREDENTIALS_FILE"
-    log_ok "Creado: $CREDENTIALS_FILE (solo root)"
-else
-    log_ok "Ya existe: $CREDENTIALS_FILE"
-fi
 
-# ── Paso 5: Verificar plantilla ──────────────────────────────
-log_step "Verificando plantilla de VM..."
-if [[ ! -f "$TEMPLATE_DIR/$TEMPLATE_VHDX" ]]; then
-    log_warn "Plantilla .vhdx no encontrada en: $TEMPLATE_DIR/$TEMPLATE_VHDX"
-    log_warn "Copia manualmente el fichero antes de crear VMs de alumnos."
-else
-    log_ok "Plantilla .vhdx encontrada."
-fi
+    log "OK" "VM $vmname creada para $username en \\\\$SERVER_IP\\$folder"
 
-if [[ ! -f "$TEMPLATE_DIR/$TEMPLATE_ISO" ]]; then
-    log_warn "ISO EVE-NG no encontrada en: $TEMPLATE_DIR/$TEMPLATE_ISO"
-    log_warn "Copia manualmente la ISO antes de crear VMs de alumnos."
-else
-    log_ok "ISO EVE-NG encontrada."
-fi
+    # Respuesta al cliente
+    jq -n \
+        --arg folder "$folder" \
+        --arg vmname "$vmname" \
+        --arg username "$username" \
+        --arg password "$password" \
+        --arg share "\\\\\\\\$SERVER_IP\\\\$folder" \
+        --arg vhdx "$vmname.vhdx" \
+        --arg iso "$TEMPLATE_ISO" \
+        '{
+            folder: $folder,
+            vmname: $vmname,
+            username: $username,
+            password: $password,
+            share: $share,
+            vhdx: $vhdx,
+            iso: $iso,
+            status: "ready",
+            message: "Ejecuta sync.ps1 -mode pull en tu PC para descargar la VM"
+        }'
+}
 
-# ── Paso 6: Configurar Samba ─────────────────────────────────
-log_step "Configurando Samba..."
+# ── GET /status ───────────────────────────────────────────────
+get_status() {
+    # Devolver lista de shares activas sin las contraseñas
+    jq '[.[] | {folder, vmname, username, share, created}]' \
+        "$CREDENTIALS_FILE" 2>/dev/null || echo "[]"
+}
 
-# Backup de la config original
-if [[ ! -f /etc/samba/smb.conf.bak ]]; then
-    cp /etc/samba/smb.conf /etc/samba/smb.conf.bak
-    log_ok "Backup de smb.conf guardado."
-fi
+# ── Parsear request HTTP ──────────────────────────────────────
+handle_request() {
+    local fd="$1"
+    local request=""
+    local body=""
+    local method=""
+    local path=""
+    local content_length=0
 
-# Escribir configuracion global de Samba
-cat > /etc/samba/smb.conf << EOF
-[global]
-    workgroup = ${SAMBA_WORKGROUP}
-    server string = EVE-NG Lab Server
-    security = user
-    map to guest = never
-    log file = /var/log/samba/log.%m
-    max log size = 50
-    logging = file
-    panic action = /usr/share/samba/panic-action %d
-    server role = standalone server
-    obey pam restrictions = yes
-    unix password sync = yes
-    passwd program = /usr/bin/passwd %u
-    passwd chat = *Enter\snew\s*\spassword:* %n\n *Retype\snew\s*\spassword:* %n\n *password\supdated\ssuccessfully* .
-    pam password change = yes
-    usershare allow guests = no
+    # Leer cabeceras
+    while IFS= read -r -t 10 line <&"$fd"; do
+        line="${line%$'\r'}"
+        [[ -z "$line" ]] && break
+        if [[ -z "$request" ]]; then
+            request="$line"
+            method="${line%% *}"
+            path="${line#* }"; path="${path%% *}"
+        fi
+        if [[ "$line" =~ ^Content-Length:\ ([0-9]+) ]]; then
+            content_length="${BASH_REMATCH[1]}"
+        fi
+    done
 
-# Las shares de los alumnos se incluyen desde un fichero separado
-# Se genera automaticamente por listener.sh
-include = /etc/samba/shares.conf
-EOF
+    # Leer body si hay Content-Length
+    if [[ "$content_length" -gt 0 ]]; then
+        read -r -t 10 -n "$content_length" body <&"$fd" || true
+    fi
 
-# Crear fichero de shares vacio si no existe
-if [[ ! -f /etc/samba/shares.conf ]]; then
-    echo "# Shares de alumnos — generado automaticamente por listener.sh" \
-        > /etc/samba/shares.conf
-    log_ok "Creado: /etc/samba/shares.conf"
-fi
+    log "INFO" "$method $path"
 
-# Verificar configuracion
-testparm -s &>/dev/null && log_ok "Configuracion Samba valida." \
-    || log_warn "Advertencia en la configuracion de Samba."
+    # ── GET /health ───────────────────────────────────────────
+    if [[ "$method" == "GET" && "$path" == "/health" ]]; then
+        send_response "$fd" "200 OK" '{"status":"ok"}'
+        return
+    fi
 
-# ── Paso 7: Habilitar y arrancar Samba ──────────────────────
-log_step "Habilitando servicios Samba..."
-systemctl enable smbd nmbd
-systemctl restart smbd nmbd
-log_ok "Samba activo."
+    # ── GET /status ───────────────────────────────────────────
+    if [[ "$method" == "GET" && "$path" == "/status" ]]; then
+        local status_body
+        status_body=$(get_status)
+        send_response "$fd" "200 OK" "$status_body"
+        return
+    fi
 
-# ── Paso 8: Firewall ─────────────────────────────────────────
-log_step "Configurando firewall..."
-if command -v ufw &>/dev/null; then
-    ufw allow samba
-    ufw allow "$LISTENER_PORT/tcp" comment "EVE-NG listener"
-    log_ok "Reglas UFW añadidas."
-else
-    log_warn "UFW no disponible. Configura el firewall manualmente."
-fi
+    # ── POST /create-vm ───────────────────────────────────────
+    if [[ "$method" == "POST" && "$path" == "/create-vm" ]]; then
+        if [[ -z "$body" ]]; then
+            send_response "$fd" "400 Bad Request" '{"error":"Body vacio"}'
+            return
+        fi
 
-# ── Paso 9: Instalar listener como servicio systemd ──────────
-log_step "Instalando listener como servicio systemd..."
+        # Extraer campos del JSON
+        local folder vmname username password
+        folder=$(echo "$body"   | jq -r '.folder   // empty' 2>/dev/null)
+        vmname=$(echo "$body"   | jq -r '.vmname   // empty' 2>/dev/null)
+        username=$(echo "$body" | jq -r '.username // empty' 2>/dev/null)
+        password=$(echo "$body" | jq -r '.password // empty' 2>/dev/null)
 
-cat > /etc/systemd/system/eveng-listener.service << EOF
-[Unit]
-Description=EVE-NG Lab Listener
-After=network.target smbd.service
+        # Validar campos obligatorios
+        if [[ -z "$folder" || -z "$vmname" || -z "$username" || -z "$password" ]]; then
+            send_response "$fd" "400 Bad Request" \
+                '{"error":"Campos requeridos: folder, vmname, username, password"}'
+            return
+        fi
 
-[Service]
-Type=simple
-ExecStart=/bin/bash ${SCRIPT_DIR}/listener.sh
-Restart=always
-RestartSec=5
-StandardOutput=append:${LOGS_DIR}/listener.log
-StandardError=append:${LOGS_DIR}/listener.log
+        # Validar formato (solo letras, numeros y guion)
+        if ! [[ "$folder"   =~ ^[a-zA-Z0-9\-]+$ ]] || \
+           ! [[ "$vmname"   =~ ^[a-zA-Z0-9\-]+$ ]] || \
+           ! [[ "$username" =~ ^[a-zA-Z0-9\-]+$ ]]; then
+            send_response "$fd" "400 Bad Request" \
+                '{"error":"Formato invalido. Solo letras, numeros y guiones."}'
+            return
+        fi
 
-[Install]
-WantedBy=multi-user.target
-EOF
+        # Crear VM
+        local result
+        if result=$(create_vm "$folder" "$vmname" "$username" "$password"); then
+            send_response "$fd" "201 Created" "$result"
+        else
+            send_response "$fd" "409 Conflict" "$result"
+        fi
+        return
+    fi
 
-systemctl daemon-reload
-systemctl enable eveng-listener
-log_ok "Servicio eveng-listener registrado."
-log_warn "Arrancalo con: systemctl start eveng-listener"
+    # ── 404 ──────────────────────────────────────────────────
+    send_response "$fd" "404 Not Found" '{"error":"Endpoint no encontrado"}'
+}
 
-# ── Resumen ──────────────────────────────────────────────────
-echo ""
-echo -e "${CYAN}══════════════════════════════════════════════${NC}"
-echo -e "${CYAN}  SETUP COMPLETADO${NC}"
-echo -e "${CYAN}══════════════════════════════════════════════${NC}"
-echo "  IP servidor    : $SERVER_IP"
-echo "  Puerto listener: $LISTENER_PORT"
-echo "  Shares dir     : $SHARES_DIR"
-echo "  Plantilla dir  : $TEMPLATE_DIR"
-echo "  Credenciales   : $CREDENTIALS_FILE"
-echo -e "${CYAN}══════════════════════════════════════════════${NC}"
-echo ""
-echo -e "${YELLOW}  Proximos pasos:${NC}"
-echo "  1. Copia eve-ng-base.vhdx a $TEMPLATE_DIR/"
-echo "  2. Copia eve-ce-6.2.0-4-full.iso a $TEMPLATE_DIR/"
-echo "  3. systemctl start eveng-listener"
-echo ""
+# ── Bucle principal ───────────────────────────────────────────
+log "INFO" "Listener iniciado en $SERVER_IP:$LISTENER_PORT"
+log "INFO" "POST /create-vm  {folder, vmname, username, password}"
+log "INFO" "GET  /status"
+log "INFO" "GET  /health"
+
+while true; do
+    # Aceptar conexion TCP con netcat
+    # -l escucha, -q1 cierra tras 1s sin datos, -p puerto
+    nc -l -q 1 -p "$LISTENER_PORT" -e /dev/null 2>/dev/null &
+
+    # Usar coproc para manejar la conexion
+    coproc NC { nc -l -p "$LISTENER_PORT" 2>/dev/null; }
+
+    handle_request "${NC[0]}" <&"${NC[0]}" >&"${NC[1]}" 2>/dev/null || true
+
+    # Cerrar coproc
+    exec {NC[0]}>&- {NC[1]}>&- 2>/dev/null || true
+    wait "$NC_PID" 2>/dev/null || true
+done
