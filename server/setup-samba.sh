@@ -73,25 +73,50 @@ else
     log_ok "Ya existe: $CREDENTIALS_FILE — permisos verificados."
 fi
 
-# ── Paso 4: Permisos del script listener ─────────────────────
+# ── Paso 4: Permisos de los scripts ─────────────────────────
 log_step "Configurando permisos de los scripts..."
+
 chmod +x "$SCRIPT_DIR/listener.sh"
 chown root:root "$SCRIPT_DIR/listener.sh"
 log_ok "listener.sh: ejecutable por root."
+
+chmod +x "$SCRIPT_DIR/handler.sh"
+chown root:root "$SCRIPT_DIR/handler.sh"
+log_ok "handler.sh: ejecutable por root."
 
 chmod 644 "$SCRIPT_DIR/server.conf"
 chown root:root "$SCRIPT_DIR/server.conf"
 log_ok "server.conf: permisos correctos."
 
-# ── Paso 5: Verificar ISO ────────────────────────────────────
-log_step "Verificando ISO de EVE-NG..."
-if [[ ! -f "$TEMPLATE_DIR/$TEMPLATE_ISO" ]]; then
-    log_warn "ISO no encontrada en: $TEMPLATE_DIR/$TEMPLATE_ISO"
-    log_warn "Copia la ISO antes de crear VMs:"
-    log_warn "  cp /ruta/a/$TEMPLATE_ISO $TEMPLATE_DIR/"
+# ── Paso 5: Descargar ISO de EVE-NG ─────────────────────────
+log_step "Comprobando ISO de EVE-NG..."
+ISO_URL="https://customers.eve-ng.net/eve-ce-prod-6.2.0-4-full.iso"
+ISO_DEST="$TEMPLATE_DIR/$TEMPLATE_ISO"
+
+if [[ -f "$ISO_DEST" ]]; then
+    local_size=$(stat -c%s "$ISO_DEST" 2>/dev/null || echo 0)
+    log_ok "ISO ya presente ($(( local_size / 1024 / 1024 )) MB): $ISO_DEST"
 else
-    chmod 644 "$TEMPLATE_DIR/$TEMPLATE_ISO"
-    log_ok "ISO encontrada y permisos verificados."
+    log_warn "ISO no encontrada. Descargando desde el servidor oficial..."
+    log_warn "Esto puede tardar varios minutos dependiendo de la conexion."
+    echo ""
+
+    curl -L --progress-bar \
+        -o "$ISO_DEST" \
+        "$ISO_URL" || {
+        log_warn "Error en la descarga. Intentando con wget..."
+        wget --progress=bar:force \
+            -O "$ISO_DEST" \
+            "$ISO_URL" || {
+            rm -f "$ISO_DEST"
+            log_fail "No se pudo descargar la ISO. Comprueba la conexion a internet."
+        }
+    }
+
+    chmod 644 "$ISO_DEST"
+    chown root:root "$ISO_DEST"
+    local_size=$(stat -c%s "$ISO_DEST" 2>/dev/null || echo 0)
+    log_ok "ISO descargada correctamente ($(( local_size / 1024 / 1024 )) MB)."
 fi
 
 # ── Paso 6: Configurar Samba ─────────────────────────────────
@@ -180,15 +205,10 @@ systemctl daemon-reload
 systemctl enable eveng-listener
 log_ok "Servicio eveng-listener instalado y habilitado."
 
-# Intentar arrancarlo si la ISO ya esta presente
-if [[ -f "$TEMPLATE_DIR/$TEMPLATE_ISO" ]]; then
-    systemctl start eveng-listener \
-        && log_ok "Listener arrancado correctamente." \
-        || log_warn "No se pudo arrancar el listener — revisa: journalctl -u eveng-listener"
-else
-    log_warn "Listener NO arrancado — falta la ISO."
-    log_warn "Una vez copies la ISO ejecuta: systemctl start eveng-listener"
-fi
+# Intentar arrancar el listener
+systemctl start eveng-listener \
+    && log_ok "Listener arrancado correctamente." \
+    || log_warn "No se pudo arrancar el listener — revisa: journalctl -u eveng-listener"
 
 # ── Resumen ──────────────────────────────────────────────────
 echo ""
@@ -198,16 +218,13 @@ echo -e "${CYAN}═════════════════════�
 echo "  IP servidor    : $SERVER_IP"
 echo "  Puerto listener: $LISTENER_PORT"
 echo "  Shares dir     : $SHARES_DIR"
-echo "  ISO dir        : $TEMPLATE_DIR"
+echo "  ISO            : $TEMPLATE_DIR/$TEMPLATE_ISO"
 echo "  Credenciales   : $CREDENTIALS_FILE (solo root)"
 echo "  Service file   : /etc/systemd/system/eveng-listener.service"
 echo -e "${CYAN}══════════════════════════════════════════════${NC}"
 echo ""
-if [[ ! -f "$TEMPLATE_DIR/$TEMPLATE_ISO" ]]; then
-    echo -e "${YELLOW}  PENDIENTE:${NC}"
-    echo "  1. Copia la ISO de EVE-NG:"
-    echo "     cp /ruta/a/$TEMPLATE_ISO $TEMPLATE_DIR/"
-    echo "  2. Arranca el listener:"
-    echo "     systemctl start eveng-listener"
-    echo ""
-fi
+echo -e "${GREEN}  Listo. Los alumnos ya pueden crear sus VMs con:${NC}"
+echo "  curl -X POST http://$SERVER_IP:$LISTENER_PORT/create-vm \\"
+echo "    -H 'Content-Type: application/json' \\"
+echo "    -d '{\"folder\":\"nombre\",\"vmname\":\"vm\",\"username\":\"user\",\"password\":\"pass\"}'"
+echo ""
