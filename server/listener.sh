@@ -5,15 +5,34 @@
 #
 #  Endpoints:
 #    POST /create-vm  {folder, vmname, username, password}
-#    GET  /status     -> lista de shares activas
+#    GET  /status     -> lista de shares activas (sin passwords)
 #    GET  /health     -> ping
 # ============================================================
 
 set -uo pipefail
 
+# ── Verificar root ───────────────────────────────────────────
+if [[ $EUID -ne 0 ]]; then
+    echo "[ERROR] El listener debe ejecutarse como root (via systemd)" >&2
+    exit 1
+fi
+
 # ── Cargar configuracion ─────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ ! -f "$SCRIPT_DIR/server.conf" ]]; then
+    echo "[ERROR] No se encuentra server.conf en $SCRIPT_DIR" >&2
+    exit 1
+fi
 source "$SCRIPT_DIR/server.conf"
+
+# ── Crear logs dir si no existe ──────────────────────────────
+mkdir -p "$LOGS_DIR"
+
+# ── Verificar socat ──────────────────────────────────────────
+if ! command -v socat &>/dev/null; then
+    echo "[ERROR] socat no esta instalado. Ejecuta: apt-get install -y socat" >&2
+    exit 1
+fi
 
 # ── Log ──────────────────────────────────────────────────────
 log() {
@@ -24,15 +43,14 @@ log() {
 
 # ── Respuesta HTTP ───────────────────────────────────────────
 send_response() {
-    local fd="$1"
-    local status="$2"
-    local body="$3"
+    local status="$1"
+    local body="$2"
     local len=${#body}
     printf "HTTP/1.1 %s\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s" \
-        "$status" "$len" "$body" >&"$fd"
+        "$status" "$len" "$body"
 }
 
-# ── Crear VM: copia plantilla y configura share ──────────────
+# ── Crear carpeta SMB del alumno ─────────────────────────────
 create_vm() {
     local folder="$1"
     local vmname="$2"
@@ -41,7 +59,6 @@ create_vm() {
 
     local share_path="$SHARES_DIR/$folder"
 
-    # Validar que no existen ya
     if [[ -d "$share_path" ]]; then
         echo '{"error":"La carpeta ya existe"}'
         return 1
@@ -52,51 +69,52 @@ create_vm() {
         return 1
     fi
 
-    # Comprobar que existe la plantilla
-    if [[ ! -f "$TEMPLATE_DIR/$TEMPLATE_VHDX" ]]; then
-        echo '{"error":"Plantilla .vhdx no encontrada en el servidor"}'
+    if [[ ! -f "$TEMPLATE_DIR/$TEMPLATE_ISO" ]]; then
+        echo '{"error":"ISO de EVE-NG no encontrada en el servidor"}'
         return 1
     fi
 
-    log "INFO" "Creando VM para $username (folder: $folder, vmname: $vmname)"
+    log "INFO" "Creando carpeta para $username (folder: $folder, vmname: $vmname)"
 
-    # Crear usuario de sistema Linux (sin shell, solo para Samba)
+    # Crear usuario Linux sin shell (solo Samba)
     useradd -M -s /usr/sbin/nologin "$username" 2>/dev/null || {
         echo '{"error":"Error creando usuario del sistema"}'
         return 1
     }
 
-    # Establecer contrasena Samba para el usuario
+    # Contrasena Samba
     printf "%s\n%s\n" "$password" "$password" | smbpasswd -a -s "$username" 2>/dev/null || {
         userdel "$username" 2>/dev/null
         echo '{"error":"Error configurando contrasena Samba"}'
         return 1
     }
 
-    # Crear carpeta de la share
+    # Crear carpeta con permisos solo para ese usuario
     mkdir -p "$share_path"
     chown "$username":root "$share_path"
     chmod 700 "$share_path"
 
-    # Copiar plantilla .vhdx con el nombre de la VM
-    log "INFO" "Copiando plantilla .vhdx -> $share_path/$vmname.vhdx"
-    cp "$TEMPLATE_DIR/$TEMPLATE_VHDX" "$share_path/$vmname.vhdx" || {
-        log "ERROR" "Error copiando plantilla"
+    # Copiar ISO
+    log "INFO" "Copiando ISO -> $share_path/$TEMPLATE_ISO"
+    cp "$TEMPLATE_DIR/$TEMPLATE_ISO" "$share_path/$TEMPLATE_ISO" || {
+        log "ERROR" "Error copiando ISO"
         rm -rf "$share_path"
         userdel "$username" 2>/dev/null
-        echo '{"error":"Error copiando plantilla .vhdx"}'
+        echo '{"error":"Error copiando ISO de EVE-NG"}'
         return 1
     }
 
-    # Copiar ISO de EVE-NG
-    log "INFO" "Copiando ISO -> $share_path/$TEMPLATE_ISO"
-    cp "$TEMPLATE_DIR/$TEMPLATE_ISO" "$share_path/$TEMPLATE_ISO" || {
-        log "WARN" "Error copiando ISO — continuando sin ella"
-    }
+    # Fichero info con datos de la VM
+    cat > "$share_path/vm-info.txt" << EOF
+folder=$folder
+vmname=$vmname
+username=$username
+created=$(date '+%Y-%m-%d %H:%M:%S')
+EOF
 
-    # Ajustar permisos de los ficheros
     chown -R "$username":root "$share_path"
-    chmod 600 "$share_path/$vmname.vhdx"
+    chmod 600 "$share_path/$TEMPLATE_ISO"
+    chmod 600 "$share_path/vm-info.txt"
 
     # Añadir share a Samba
     cat >> /etc/samba/shares.conf << EOF
@@ -111,7 +129,6 @@ create_vm() {
     force user = $username
 EOF
 
-    # Recargar Samba sin interrumpir conexiones activas
     smbcontrol smbd reload-config 2>/dev/null || systemctl reload smbd
 
     # Guardar en credentials.json
@@ -123,9 +140,9 @@ EOF
         --arg vmname "$vmname" \
         --arg username "$username" \
         --arg password "$password" \
-        --arg share "\\\\\\\\$SERVER_IP\\\\$folder" \
+        --arg share "\\\\$SERVER_IP\\$folder" \
         --arg created "$created_at" \
-        '{folder:$folder, vmname:$vmname, username:$username, password:$password, share:$share, created:$created}')
+        '{folder:$folder,vmname:$vmname,username:$username,password:$password,share:$share,created:$created}')
 
     local tmp
     tmp=$(mktemp)
@@ -133,16 +150,14 @@ EOF
     mv "$tmp" "$CREDENTIALS_FILE"
     chmod 600 "$CREDENTIALS_FILE"
 
-    log "OK" "VM $vmname creada para $username en \\\\$SERVER_IP\\$folder"
+    log "OK" "Carpeta $folder creada para $username"
 
-    # Respuesta al cliente
     jq -n \
         --arg folder "$folder" \
         --arg vmname "$vmname" \
         --arg username "$username" \
         --arg password "$password" \
-        --arg share "\\\\\\\\$SERVER_IP\\\\$folder" \
-        --arg vhdx "$vmname.vhdx" \
+        --arg share "\\\\$SERVER_IP\\$folder" \
         --arg iso "$TEMPLATE_ISO" \
         '{
             folder: $folder,
@@ -150,23 +165,20 @@ EOF
             username: $username,
             password: $password,
             share: $share,
-            vhdx: $vhdx,
             iso: $iso,
             status: "ready",
-            message: "Ejecuta sync.ps1 -mode pull en tu PC para descargar la VM"
+            message: "Ejecuta sync.ps1 -mode pull en tu PC para descargar la carpeta"
         }'
 }
 
 # ── GET /status ───────────────────────────────────────────────
 get_status() {
-    # Devolver lista de shares activas sin las contraseñas
-    jq '[.[] | {folder, vmname, username, share, created}]' \
+    jq '[.[] | {folder,vmname,username,share,created}]' \
         "$CREDENTIALS_FILE" 2>/dev/null || echo "[]"
 }
 
-# ── Parsear request HTTP ──────────────────────────────────────
+# ── Manejar peticion ─────────────────────────────────────────
 handle_request() {
-    local fd="$1"
     local request=""
     local body=""
     local method=""
@@ -174,7 +186,7 @@ handle_request() {
     local content_length=0
 
     # Leer cabeceras
-    while IFS= read -r -t 10 line <&"$fd"; do
+    while IFS= read -r -t 10 line; do
         line="${line%$'\r'}"
         [[ -z "$line" ]] && break
         if [[ -z "$request" ]]; then
@@ -182,93 +194,81 @@ handle_request() {
             method="${line%% *}"
             path="${line#* }"; path="${path%% *}"
         fi
-        if [[ "$line" =~ ^Content-Length:\ ([0-9]+) ]]; then
+        if [[ "$line" =~ ^Content-Length:[[:space:]]([0-9]+) ]]; then
             content_length="${BASH_REMATCH[1]}"
         fi
     done
 
-    # Leer body si hay Content-Length
+    # Leer body
     if [[ "$content_length" -gt 0 ]]; then
-        read -r -t 10 -n "$content_length" body <&"$fd" || true
+        read -r -t 10 -n "$content_length" body || true
     fi
 
     log "INFO" "$method $path"
 
-    # ── GET /health ───────────────────────────────────────────
+    # GET /health
     if [[ "$method" == "GET" && "$path" == "/health" ]]; then
-        send_response "$fd" "200 OK" '{"status":"ok"}'
+        send_response "200 OK" '{"status":"ok"}'
         return
     fi
 
-    # ── GET /status ───────────────────────────────────────────
+    # GET /status
     if [[ "$method" == "GET" && "$path" == "/status" ]]; then
-        local status_body
-        status_body=$(get_status)
-        send_response "$fd" "200 OK" "$status_body"
+        send_response "200 OK" "$(get_status)"
         return
     fi
 
-    # ── POST /create-vm ───────────────────────────────────────
+    # POST /create-vm
     if [[ "$method" == "POST" && "$path" == "/create-vm" ]]; then
         if [[ -z "$body" ]]; then
-            send_response "$fd" "400 Bad Request" '{"error":"Body vacio"}'
+            send_response "400 Bad Request" '{"error":"Body vacio"}'
             return
         fi
 
-        # Extraer campos del JSON
         local folder vmname username password
         folder=$(echo "$body"   | jq -r '.folder   // empty' 2>/dev/null)
         vmname=$(echo "$body"   | jq -r '.vmname   // empty' 2>/dev/null)
         username=$(echo "$body" | jq -r '.username // empty' 2>/dev/null)
         password=$(echo "$body" | jq -r '.password // empty' 2>/dev/null)
 
-        # Validar campos obligatorios
         if [[ -z "$folder" || -z "$vmname" || -z "$username" || -z "$password" ]]; then
-            send_response "$fd" "400 Bad Request" \
+            send_response "400 Bad Request" \
                 '{"error":"Campos requeridos: folder, vmname, username, password"}'
             return
         fi
 
-        # Validar formato (solo letras, numeros y guion)
         if ! [[ "$folder"   =~ ^[a-zA-Z0-9\-]+$ ]] || \
            ! [[ "$vmname"   =~ ^[a-zA-Z0-9\-]+$ ]] || \
            ! [[ "$username" =~ ^[a-zA-Z0-9\-]+$ ]]; then
-            send_response "$fd" "400 Bad Request" \
+            send_response "400 Bad Request" \
                 '{"error":"Formato invalido. Solo letras, numeros y guiones."}'
             return
         fi
 
-        # Crear VM
         local result
-        if result=$(create_vm "$folder" "$vmname" "$username" "$password"); then
-            send_response "$fd" "201 Created" "$result"
+        if result=$(create_vm "$folder" "$vmname" "$username" "$password" 2>&1); then
+            send_response "201 Created" "$result"
         else
-            send_response "$fd" "409 Conflict" "$result"
+            send_response "409 Conflict" "$result"
         fi
         return
     fi
 
-    # ── 404 ──────────────────────────────────────────────────
-    send_response "$fd" "404 Not Found" '{"error":"Endpoint no encontrado"}'
+    send_response "404 Not Found" '{"error":"Endpoint no encontrado"}'
 }
 
-# ── Bucle principal ───────────────────────────────────────────
+# ── Bucle principal con socat ────────────────────────────────
+log "INFO" "========================================"
 log "INFO" "Listener iniciado en $SERVER_IP:$LISTENER_PORT"
-log "INFO" "POST /create-vm  {folder, vmname, username, password}"
+log "INFO" "POST /create-vm  {folder,vmname,username,password}"
 log "INFO" "GET  /status"
 log "INFO" "GET  /health"
+log "INFO" "========================================"
 
-while true; do
-    # Aceptar conexion TCP con netcat
-    # -l escucha, -q1 cierra tras 1s sin datos, -p puerto
-    nc -l -q 1 -p "$LISTENER_PORT" -e /dev/null 2>/dev/null &
+# socat acepta conexiones TCP y llama a handle_request por cada una
+# SYSTEM ejecuta la funcion exportada como subshell
+export -f handle_request send_response create_vm get_status log
+export LOGS_DIR SHARES_DIR TEMPLATE_DIR TEMPLATE_ISO CREDENTIALS_FILE SERVER_IP
 
-    # Usar coproc para manejar la conexion
-    coproc NC { nc -l -p "$LISTENER_PORT" 2>/dev/null; }
-
-    handle_request "${NC[0]}" <&"${NC[0]}" >&"${NC[1]}" 2>/dev/null || true
-
-    # Cerrar coproc
-    exec {NC[0]}>&- {NC[1]}>&- 2>/dev/null || true
-    wait "$NC_PID" 2>/dev/null || true
-done
+socat TCP-LISTEN:"$LISTENER_PORT",reuseaddr,fork \
+    SYSTEM:"bash -c handle_request" 2>>"$LOGS_DIR/listener.log"

@@ -8,8 +8,19 @@
 
 set -euo pipefail
 
+# ── Verificar root ───────────────────────────────────────────
+if [[ $EUID -ne 0 ]]; then
+    echo -e "\033[0;31m[ERROR] Este script debe ejecutarse como root.\033[0m"
+    echo -e "\033[1;33m        Usa: sudo ./setup-samba.sh\033[0m"
+    exit 1
+fi
+
 # ── Cargar configuracion ─────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ ! -f "$SCRIPT_DIR/server.conf" ]]; then
+    echo -e "\033[0;31m[ERROR] No se encuentra server.conf en $SCRIPT_DIR\033[0m"
+    exit 1
+fi
 source "$SCRIPT_DIR/server.conf"
 
 # ── Colores ──────────────────────────────────────────────────
@@ -29,29 +40,26 @@ echo "║   EVE-NG Lab — Setup Ubuntu Server          ║"
 echo "╚══════════════════════════════════════════════╝"
 echo -e "${NC}"
 
-# ── Paso 1: Verificar root ───────────────────────────────────
-log_step "Verificando permisos..."
-[[ $EUID -ne 0 ]] && log_fail "Ejecuta como root: sudo ./setup-samba.sh"
-log_ok "Corriendo como root."
-
-# ── Paso 2: Actualizar e instalar dependencias ───────────────
+# ── Paso 1: Actualizar e instalar dependencias ───────────────
 log_step "Instalando dependencias..."
 apt-get update -qq
-apt-get install -y -qq samba samba-common-bin netcat-openbsd jq curl
+apt-get install -y -qq samba samba-common-bin netcat-openbsd socat jq curl
 log_ok "Dependencias instaladas."
 
-# ── Paso 3: Crear estructura de directorios ──────────────────
+# ── Paso 2: Crear estructura de directorios ──────────────────
 log_step "Creando estructura de directorios..."
 for dir in "$BASE_DIR" "$SHARES_DIR" "$TEMPLATE_DIR" "$LOGS_DIR"; do
     if [[ ! -d "$dir" ]]; then
         mkdir -p "$dir"
+        chmod 755 "$dir"
+        chown root:root "$dir"
         log_ok "Creado: $dir"
     else
         log_ok "Ya existe: $dir"
     fi
 done
 
-# ── Paso 4: Crear credentials.json protegido ─────────────────
+# ── Paso 3: Crear credentials.json protegido ─────────────────
 log_step "Creando fichero de credenciales..."
 if [[ ! -f "$CREDENTIALS_FILE" ]]; then
     echo "[]" > "$CREDENTIALS_FILE"
@@ -59,23 +67,31 @@ if [[ ! -f "$CREDENTIALS_FILE" ]]; then
     chown root:root "$CREDENTIALS_FILE"
     log_ok "Creado: $CREDENTIALS_FILE (solo root)"
 else
-    log_ok "Ya existe: $CREDENTIALS_FILE"
+    # Asegurar permisos aunque ya existiera
+    chmod 600 "$CREDENTIALS_FILE"
+    chown root:root "$CREDENTIALS_FILE"
+    log_ok "Ya existe: $CREDENTIALS_FILE — permisos verificados."
 fi
 
-# ── Paso 5: Verificar plantilla ──────────────────────────────
-log_step "Verificando plantilla de VM..."
-if [[ ! -f "$TEMPLATE_DIR/$TEMPLATE_VHDX" ]]; then
-    log_warn "Plantilla .vhdx no encontrada en: $TEMPLATE_DIR/$TEMPLATE_VHDX"
-    log_warn "Copia manualmente el fichero antes de crear VMs de alumnos."
-else
-    log_ok "Plantilla .vhdx encontrada."
-fi
+# ── Paso 4: Permisos del script listener ─────────────────────
+log_step "Configurando permisos de los scripts..."
+chmod +x "$SCRIPT_DIR/listener.sh"
+chown root:root "$SCRIPT_DIR/listener.sh"
+log_ok "listener.sh: ejecutable por root."
 
+chmod 644 "$SCRIPT_DIR/server.conf"
+chown root:root "$SCRIPT_DIR/server.conf"
+log_ok "server.conf: permisos correctos."
+
+# ── Paso 5: Verificar ISO ────────────────────────────────────
+log_step "Verificando ISO de EVE-NG..."
 if [[ ! -f "$TEMPLATE_DIR/$TEMPLATE_ISO" ]]; then
-    log_warn "ISO EVE-NG no encontrada en: $TEMPLATE_DIR/$TEMPLATE_ISO"
-    log_warn "Copia manualmente la ISO antes de crear VMs de alumnos."
+    log_warn "ISO no encontrada en: $TEMPLATE_DIR/$TEMPLATE_ISO"
+    log_warn "Copia la ISO antes de crear VMs:"
+    log_warn "  cp /ruta/a/$TEMPLATE_ISO $TEMPLATE_DIR/"
 else
-    log_ok "ISO EVE-NG encontrada."
+    chmod 644 "$TEMPLATE_DIR/$TEMPLATE_ISO"
+    log_ok "ISO encontrada y permisos verificados."
 fi
 
 # ── Paso 6: Configurar Samba ─────────────────────────────────
@@ -84,10 +100,9 @@ log_step "Configurando Samba..."
 # Backup de la config original
 if [[ ! -f /etc/samba/smb.conf.bak ]]; then
     cp /etc/samba/smb.conf /etc/samba/smb.conf.bak
-    log_ok "Backup de smb.conf guardado."
+    log_ok "Backup guardado: /etc/samba/smb.conf.bak"
 fi
 
-# Escribir configuracion global de Samba
 cat > /etc/samba/smb.conf << EOF
 [global]
     workgroup = ${SAMBA_WORKGROUP}
@@ -97,32 +112,32 @@ cat > /etc/samba/smb.conf << EOF
     log file = /var/log/samba/log.%m
     max log size = 50
     logging = file
-    panic action = /usr/share/samba/panic-action %d
     server role = standalone server
     obey pam restrictions = yes
     unix password sync = yes
     passwd program = /usr/bin/passwd %u
-    passwd chat = *Enter\snew\s*\spassword:* %n\n *Retype\snew\s*\spassword:* %n\n *password\supdated\ssuccessfully* .
     pam password change = yes
     usershare allow guests = no
 
-# Las shares de los alumnos se incluyen desde un fichero separado
-# Se genera automaticamente por listener.sh
+# Shares de alumnos — generadas automaticamente por listener.sh
 include = /etc/samba/shares.conf
 EOF
 
-# Crear fichero de shares vacio si no existe
+# Crear shares.conf vacio si no existe
 if [[ ! -f /etc/samba/shares.conf ]]; then
-    echo "# Shares de alumnos — generado automaticamente por listener.sh" \
+    echo "# Shares de alumnos — generado por listener.sh" \
         > /etc/samba/shares.conf
+    chmod 644 /etc/samba/shares.conf
     log_ok "Creado: /etc/samba/shares.conf"
+else
+    log_ok "Ya existe: /etc/samba/shares.conf"
 fi
 
-# Verificar configuracion
-testparm -s &>/dev/null && log_ok "Configuracion Samba valida." \
-    || log_warn "Advertencia en la configuracion de Samba."
+testparm -s &>/dev/null \
+    && log_ok "Configuracion Samba valida." \
+    || log_warn "Advertencia en la configuracion de Samba — revisa con: testparm"
 
-# ── Paso 7: Habilitar y arrancar Samba ──────────────────────
+# ── Paso 7: Habilitar Samba ──────────────────────────────────
 log_step "Habilitando servicios Samba..."
 systemctl enable smbd nmbd
 systemctl restart smbd nmbd
@@ -135,19 +150,21 @@ if command -v ufw &>/dev/null; then
     ufw allow "$LISTENER_PORT/tcp" comment "EVE-NG listener"
     log_ok "Reglas UFW añadidas."
 else
-    log_warn "UFW no disponible. Configura el firewall manualmente."
+    log_warn "UFW no disponible — configura el firewall manualmente si es necesario."
 fi
 
-# ── Paso 9: Instalar listener como servicio systemd ──────────
-log_step "Instalando listener como servicio systemd..."
+# ── Paso 9: Instalar servicio systemd ───────────────────────
+log_step "Instalando servicio systemd del listener..."
 
 cat > /etc/systemd/system/eveng-listener.service << EOF
 [Unit]
 Description=EVE-NG Lab Listener
 After=network.target smbd.service
+Requires=smbd.service
 
 [Service]
 Type=simple
+User=root
 ExecStart=/bin/bash ${SCRIPT_DIR}/listener.sh
 Restart=always
 RestartSec=5
@@ -158,10 +175,20 @@ StandardError=append:${LOGS_DIR}/listener.log
 WantedBy=multi-user.target
 EOF
 
+chmod 644 /etc/systemd/system/eveng-listener.service
 systemctl daemon-reload
 systemctl enable eveng-listener
-log_ok "Servicio eveng-listener registrado."
-log_warn "Arrancalo con: systemctl start eveng-listener"
+log_ok "Servicio eveng-listener instalado y habilitado."
+
+# Intentar arrancarlo si la ISO ya esta presente
+if [[ -f "$TEMPLATE_DIR/$TEMPLATE_ISO" ]]; then
+    systemctl start eveng-listener \
+        && log_ok "Listener arrancado correctamente." \
+        || log_warn "No se pudo arrancar el listener — revisa: journalctl -u eveng-listener"
+else
+    log_warn "Listener NO arrancado — falta la ISO."
+    log_warn "Una vez copies la ISO ejecuta: systemctl start eveng-listener"
+fi
 
 # ── Resumen ──────────────────────────────────────────────────
 echo ""
@@ -171,12 +198,16 @@ echo -e "${CYAN}═════════════════════�
 echo "  IP servidor    : $SERVER_IP"
 echo "  Puerto listener: $LISTENER_PORT"
 echo "  Shares dir     : $SHARES_DIR"
-echo "  Plantilla dir  : $TEMPLATE_DIR"
-echo "  Credenciales   : $CREDENTIALS_FILE"
+echo "  ISO dir        : $TEMPLATE_DIR"
+echo "  Credenciales   : $CREDENTIALS_FILE (solo root)"
+echo "  Service file   : /etc/systemd/system/eveng-listener.service"
 echo -e "${CYAN}══════════════════════════════════════════════${NC}"
 echo ""
-echo -e "${YELLOW}  Proximos pasos:${NC}"
-echo "  1. Copia eve-ng-base.vhdx a $TEMPLATE_DIR/"
-echo "  2. Copia eve-ce-6.2.0-4-full.iso a $TEMPLATE_DIR/"
-echo "  3. systemctl start eveng-listener"
-echo ""
+if [[ ! -f "$TEMPLATE_DIR/$TEMPLATE_ISO" ]]; then
+    echo -e "${YELLOW}  PENDIENTE:${NC}"
+    echo "  1. Copia la ISO de EVE-NG:"
+    echo "     cp /ruta/a/$TEMPLATE_ISO $TEMPLATE_DIR/"
+    echo "  2. Arranca el listener:"
+    echo "     systemctl start eveng-listener"
+    echo ""
+fi
