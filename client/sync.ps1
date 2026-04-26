@@ -117,26 +117,26 @@ if ($mode -eq "pull") {
         $localVhdx  = "$($CONFIG.LocalPath)\$($CONFIG.VMName).vhdx"
         $localIso   = "$($CONFIG.LocalPath)\eve-ce-6.2.0-4-full.iso"
 
-        # Copiar .vhdx
+        # Copiar .vhdx — solo si existe (no existe la primera vez)
         if (Test-Path $remoteVhdx) {
             Write-Log "Descargando $($CONFIG.VMName).vhdx (puede tardar)..." "INFO"
             robocopy (Split-Path $remoteVhdx) $CONFIG.LocalPath `
                 "$($CONFIG.VMName).vhdx" /J /NP /NFL /NDL | Out-Null
             Write-Log "VHDX descargado correctamente." "OK"
         } else {
-            Write-Log "No se encontro el .vhdx en el servidor." "ERROR"
-            Dismount-Share
-            exit 1
+            Write-Log "No hay .vhdx en el servidor — primera sesion, descargando solo la ISO." "WARN"
         }
 
         # Copiar ISO si no esta ya en local
         if (-not (Test-Path $localIso) -and (Test-Path $remoteIso)) {
-            Write-Log "Descargando ISO de EVE-NG (solo la primera vez)..." "INFO"
+            Write-Log "Descargando ISO de EVE-NG (solo la primera vez, puede tardar)..." "INFO"
             robocopy (Split-Path $remoteIso) $CONFIG.LocalPath `
                 "eve-ce-6.2.0-4-full.iso" /J /NP /NFL /NDL | Out-Null
             Write-Log "ISO descargada." "OK"
         } elseif (Test-Path $localIso) {
             Write-Log "ISO ya presente en local." "OK"
+        } else {
+            Write-Log "ISO no encontrada ni en servidor ni en local." "WARN"
         }
 
     } finally {
