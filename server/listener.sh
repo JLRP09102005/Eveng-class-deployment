@@ -42,5 +42,5 @@ echo "[$(date '+%Y-%m-%d %H:%M:%S')] [INFO] Listener iniciado en $SERVER_IP:$LIS
 
 # socat llama a handler.sh por cada conexion entrante
 exec socat TCP-LISTEN:"$LISTENER_PORT",reuseaddr,fork \
-    EXEC:"bash $SCRIPT_DIR/handler.sh",pty,stderr \
+    EXEC:"bash $SCRIPT_DIR/handler.sh" \
     2>>"$LOGS_DIR/listener.log"
