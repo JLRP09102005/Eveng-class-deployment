@@ -10,7 +10,6 @@
 .NOTES
     Uso: .\sync.ps1 -mode pull
          .\sync.ps1 -mode push
-    O usar los accesos directos del escritorio.
 #>
 param(
     [Parameter(Mandatory=$true)]
@@ -48,26 +47,38 @@ function Write-Log {
 }
 
 # ============================================================
-#  MONTAR / DESMONTAR SHARE SMB
+#  CREDENCIALES SMB
+# ============================================================
+$secPassword = ConvertTo-SecureString $CONFIG.Password -AsPlainText -Force
+$credential  = New-Object System.Management.Automation.PSCredential(
+    $CONFIG.Username, $secPassword
+)
+$uncBase = "\\$($CONFIG.ServerHost)\$($CONFIG.Folder)"
+
+# ============================================================
+#  MONTAR / DESMONTAR SHARE
 # ============================================================
 $driveLetter = "Z"
-$sharePath   = "\\$($CONFIG.ServerHost)\$($CONFIG.Folder)"
 
 function Mount-Share {
-    if (Test-Path "${driveLetter}:") {
-        Write-Log "Unidad $driveLetter ya montada." "OK"
-        return $true
+    # Desmontar si ya estaba montada
+    if (Get-PSDrive -Name $driveLetter -ErrorAction SilentlyContinue) {
+        Remove-PSDrive -Name $driveLetter -Force -ErrorAction SilentlyContinue
     }
-    Write-Log "Montando $sharePath como unidad ${driveLetter}:..."
-    $secPassword = ConvertTo-SecureString $CONFIG.Password -AsPlainText -Force
-    $credential  = New-Object System.Management.Automation.PSCredential(
-        $CONFIG.Username, $secPassword
-    )
+    # Eliminar conexion previa si existe
+    net use "${driveLetter}:" /delete /y 2>$null | Out-Null
+
+    Write-Log "Montando $uncBase como unidad ${driveLetter}:..."
     try {
-        New-PSDrive -Name $driveLetter -PSProvider FileSystem `
-            -Root $sharePath -Credential $credential -Persist -ErrorAction Stop | Out-Null
-        Write-Log "Share montada en ${driveLetter}:" "OK"
-        return $true
+        # Usar net use que es mas fiable con robocopy
+        $result = net use "${driveLetter}:" $uncBase /user:$($CONFIG.Username) $($CONFIG.Password) /persistent:no 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            Write-Log "Share montada en ${driveLetter}:" "OK"
+            return $true
+        } else {
+            Write-Log "Error montando share: $result" "ERROR"
+            return $false
+        }
     } catch {
         $errMsg = $_.Exception.Message
         Write-Log "Error montando share: $errMsg" "ERROR"
@@ -76,10 +87,8 @@ function Mount-Share {
 }
 
 function Dismount-Share {
-    if (Test-Path "${driveLetter}:") {
-        Remove-PSDrive -Name $driveLetter -Force -ErrorAction SilentlyContinue
-        Write-Log "Share desmontada." "OK"
-    }
+    net use "${driveLetter}:" /delete /y 2>$null | Out-Null
+    Write-Log "Share desmontada." "OK"
 }
 
 # ============================================================
@@ -95,17 +104,15 @@ Write-Host ""
 Write-Log "Modo: $mode | Servidor: $($CONFIG.ServerHost) | Carpeta: $($CONFIG.Folder)" "INFO"
 
 # ============================================================
-#  PULL — Descargar VM del servidor
+#  PULL — Descargar del servidor
 # ============================================================
 if ($mode -eq "pull") {
 
-    # Crear carpeta local si no existe
     if (-not (Test-Path $CONFIG.LocalPath)) {
         New-Item -ItemType Directory -Path $CONFIG.LocalPath -Force | Out-Null
         Write-Log "Carpeta local creada: $($CONFIG.LocalPath)" "OK"
     }
 
-    # Montar share
     if (-not (Mount-Share)) {
         Read-Host "Error de conexion. Pulsa Enter para salir"
         exit 1
@@ -114,29 +121,28 @@ if ($mode -eq "pull") {
     try {
         $remoteVhdx = "${driveLetter}:\$($CONFIG.VMName).vhdx"
         $remoteIso  = "${driveLetter}:\eve-ce-6.2.0-4-full.iso"
-        $localVhdx  = "$($CONFIG.LocalPath)\$($CONFIG.VMName).vhdx"
         $localIso   = "$($CONFIG.LocalPath)\eve-ce-6.2.0-4-full.iso"
 
-        # Copiar .vhdx — solo si existe (no existe la primera vez)
+        # Descargar .vhdx si existe (sesiones posteriores a la primera)
         if (Test-Path $remoteVhdx) {
             Write-Log "Descargando $($CONFIG.VMName).vhdx (puede tardar)..." "INFO"
-            robocopy (Split-Path $remoteVhdx) $CONFIG.LocalPath `
-                "$($CONFIG.VMName).vhdx" /J /NP /NFL /NDL | Out-Null
+            robocopy "${driveLetter}:\" $CONFIG.LocalPath "$($CONFIG.VMName).vhdx" /J /NP /NFL /NDL
             Write-Log "VHDX descargado correctamente." "OK"
         } else {
-            Write-Log "No hay .vhdx en el servidor — primera sesion, descargando solo la ISO." "WARN"
+            Write-Log "No hay .vhdx en el servidor — primera sesion." "WARN"
         }
 
-        # Copiar ISO si no esta ya en local
-        if (-not (Test-Path $localIso) -and (Test-Path $remoteIso)) {
-            Write-Log "Descargando ISO de EVE-NG (solo la primera vez, puede tardar)..." "INFO"
-            robocopy (Split-Path $remoteIso) $CONFIG.LocalPath `
-                "eve-ce-6.2.0-4-full.iso" /J /NP /NFL /NDL | Out-Null
-            Write-Log "ISO descargada." "OK"
-        } elseif (Test-Path $localIso) {
-            Write-Log "ISO ya presente en local." "OK"
+        # Descargar ISO si no esta ya en local
+        if (Test-Path $remoteIso) {
+            if (-not (Test-Path $localIso)) {
+                Write-Log "Descargando ISO de EVE-NG (solo la primera vez, puede tardar)..." "INFO"
+                robocopy "${driveLetter}:\" $CONFIG.LocalPath "eve-ce-6.2.0-4-full.iso" /J /NP /NFL /NDL
+                Write-Log "ISO descargada." "OK"
+            } else {
+                Write-Log "ISO ya presente en local." "OK"
+            }
         } else {
-            Write-Log "ISO no encontrada ni en servidor ni en local." "WARN"
+            Write-Log "ISO no encontrada en el servidor." "WARN"
         }
 
     } finally {
@@ -145,9 +151,12 @@ if ($mode -eq "pull") {
 
     Write-Host ""
     Write-Host "══════════════════════════════════════════════" -ForegroundColor Green
-    Write-Host "  VM descargada correctamente." -ForegroundColor Green
-    Write-Host "  Ejecuta 'EVE-NG Importar VM' si es la primera vez." -ForegroundColor Green
-    Write-Host "  O arranca directamente desde Hyper-V Manager." -ForegroundColor Green
+    Write-Host "  Sincronizacion completada." -ForegroundColor Green
+    if (-not (Test-Path "$($CONFIG.LocalPath)\$($CONFIG.VMName).vhdx")) {
+        Write-Host "  Primera sesion: ejecuta 'EVE-NG Importar VM'." -ForegroundColor Yellow
+    } else {
+        Write-Host "  Arranca la VM desde Hyper-V Manager." -ForegroundColor Green
+    }
     Write-Host "══════════════════════════════════════════════" -ForegroundColor Green
 }
 
@@ -156,15 +165,14 @@ if ($mode -eq "pull") {
 # ============================================================
 if ($mode -eq "push") {
 
-    # Verificar que la VM esta apagada antes de subir
+    # Verificar que la VM esta apagada
     try {
         Import-Module Hyper-V -ErrorAction Stop
         $vm = Get-VM -Name $CONFIG.VMName -ErrorAction SilentlyContinue
         if ($vm -and $vm.State -ne "Off") {
             Write-Log "La VM '$($CONFIG.VMName)' esta en estado '$($vm.State)'." "WARN"
             Write-Host ""
-            Write-Host "  !! La VM debe estar apagada antes de subir cambios." -ForegroundColor Yellow
-            Write-Host "     Apagala desde Hyper-V Manager y vuelve a ejecutar este script." -ForegroundColor Yellow
+            Write-Host "  !! Apaga la VM desde Hyper-V Manager antes de subir." -ForegroundColor Yellow
             Read-Host "`n  Pulsa Enter para salir"
             exit 1
         }
@@ -179,7 +187,6 @@ if ($mode -eq "push") {
         exit 1
     }
 
-    # Montar share
     if (-not (Mount-Share)) {
         Read-Host "Error de conexion. Pulsa Enter para salir"
         exit 1
@@ -187,8 +194,7 @@ if ($mode -eq "push") {
 
     try {
         Write-Log "Subiendo $($CONFIG.VMName).vhdx al servidor (puede tardar)..." "INFO"
-        robocopy $CONFIG.LocalPath "${driveLetter}:\" `
-            "$($CONFIG.VMName).vhdx" /J /NP /NFL /NDL | Out-Null
+        robocopy $CONFIG.LocalPath "${driveLetter}:\" "$($CONFIG.VMName).vhdx" /J /NP /NFL /NDL
         Write-Log "Cambios subidos correctamente." "OK"
     } finally {
         Dismount-Share
