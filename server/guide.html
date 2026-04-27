@@ -123,10 +123,66 @@
     .hyperv-summary h3{font-size:var(--text-lg);margin-bottom:var(--space-4)}
     .hyperv-summary .data-table td:first-child{width:45%;font-weight:600;color:var(--color-text)}
     :focus-visible{outline:2px solid var(--color-primary);outline-offset:3px}
+
+    /* ── SIDEBAR ── */
+    .sidebar-toggle{position:fixed;top:50%;left:0;transform:translateY(-50%);z-index:50;width:28px;height:72px;background:var(--color-primary);color:white;border:none;border-radius:0 var(--radius-sm) var(--radius-sm) 0;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:1rem;box-shadow:var(--shadow-md);transition:left 220ms ease,background 180ms ease}
+    .sidebar-toggle:hover{background:var(--color-primary-hover)}
+    .sidebar-toggle.open{left:280px}
+    .sidebar{position:fixed;top:0;left:-280px;width:280px;height:100vh;background:var(--color-surface);border-right:1px solid var(--color-border);z-index:49;overflow-y:auto;transition:left 220ms ease;box-shadow:var(--shadow-md);display:flex;flex-direction:column}
+    .sidebar.open{left:0}
+    .sidebar-header{padding:var(--space-6) var(--space-5) var(--space-4);border-bottom:1px solid var(--color-border);font-family:var(--font-display);font-weight:700;font-size:var(--text-sm);color:var(--color-text-muted);text-transform:uppercase;letter-spacing:.08em}
+    .sidebar-nav{padding:var(--space-4) var(--space-3);flex:1}
+    .sidebar-group{margin-bottom:var(--space-5)}
+    .sidebar-group-title{font-size:var(--text-xs);font-weight:700;color:var(--color-text-muted);text-transform:uppercase;letter-spacing:.07em;padding:0 var(--space-2);margin-bottom:var(--space-2)}
+    .sidebar-link{display:flex;align-items:center;gap:.6rem;padding:.55rem var(--space-2);border-radius:var(--radius-sm);color:var(--color-text);text-decoration:none;font-size:var(--text-sm);transition:background 150ms ease,color 150ms ease;line-height:1.3}
+    .sidebar-link:hover{background:var(--color-surface-2);color:var(--color-primary)}
+    .sidebar-link.active{background:var(--color-primary-soft);color:var(--color-primary);font-weight:700}
+    .sidebar-link .link-num{display:inline-flex;align-items:center;justify-content:center;width:1.4rem;height:1.4rem;border-radius:999px;background:var(--color-primary);color:white;font-size:.7rem;font-weight:700;flex-shrink:0}
+    .sidebar-info{margin:var(--space-3);padding:var(--space-3) var(--space-4);background:var(--color-primary-soft);border-radius:var(--radius-md);font-size:var(--text-xs);color:var(--color-text-muted);border:1px solid color-mix(in srgb,var(--color-primary) 15%,var(--color-border))}
+    .sidebar-info strong{color:var(--color-primary);display:block;margin-bottom:.25rem}
+    .sidebar-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:48}
+    .sidebar-overlay.open{display:block}
+    @media(min-width:1200px){.sidebar-toggle{display:none}.sidebar{left:0;top:0}.sidebar.open{left:0}body{padding-left:280px}.sidebar-overlay{display:none!important}}
   </style>
 </head>
 <body>
   <a class="skip-link" href="#contenido">Saltar al contenido</a>
+  <div class="sidebar-overlay" id="sidebarOverlay"></div>
+  <button class="sidebar-toggle" id="sidebarToggle" aria-label="Abrir menú">&#9776;</button>
+  <nav class="sidebar" id="sidebar" aria-label="Navegación de secciones">
+    <div class="sidebar-header">Índice de contenidos</div>
+    <div class="sidebar-nav">
+      <div class="sidebar-group">
+        <div class="sidebar-group-title">Preparación</div>
+        <a class="sidebar-link" href="#"><span class="link-num">0</span>Inicio</a>
+        <a class="sidebar-link" href="#descarga"><span class="link-num">↓</span>Descarga Git Bash</a>
+        <a class="sidebar-link" href="#pasos"><span class="link-num">1</span>Instalar Git Bash</a>
+        <a class="sidebar-link" href="#capturas">📷 Capturas de referencia</a>
+        <a class="sidebar-link" href="#recordatorios">⚡ Recordatorios rápidos</a>
+      </div>
+      <div class="sidebar-group">
+        <div class="sidebar-group-title">Configuración del entorno</div>
+        <a class="sidebar-link" href="#clonar"><span class="link-num">2</span>Clonar el repositorio</a>
+        <a class="sidebar-link" href="#registro-servidor"><span class="link-num">3</span>Registrarse en el servidor</a>
+        <a class="sidebar-link" href="#powershell"><span class="link-num">4</span>Preparar PowerShell</a>
+        <a class="sidebar-link" href="#ejecutar-script"><span class="link-num">5</span>Ejecutar setup-client.ps1</a>
+      </div>
+      <div class="sidebar-group">
+        <div class="sidebar-group-title">Flujo de trabajo</div>
+        <a class="sidebar-link" href="#pull"><span class="link-num">6</span>Descargar archivos (pull)</a>
+        <a class="sidebar-link" href="#hyper-v"><span class="link-num">7</span>Crear la VM en Hyper-V</a>
+        <a class="sidebar-link" href="#push"><span class="link-num">8</span>Subir cambios (push)</a>
+        <a class="sidebar-link" href="#sesiones-siguientes"><span class="link-num">9</span>Sesiones posteriores</a>
+      </div>
+    </div>
+    <div class="sidebar-info">
+      <strong>Comandos clave</strong>
+      <code style="display:block;margin:.2rem 0;font-size:.75rem">sync.ps1 -mode pull</code>
+      <code style="display:block;margin:.2rem 0;font-size:.75rem">sync.ps1 -mode push</code>
+      <code style="display:block;margin:.2rem 0;font-size:.75rem">setup-client.ps1</code>
+    </div>
+  </nav>
+
   <header class="site-header">
     <div class="container header-inner">
       <div class="brand">
@@ -168,7 +224,7 @@
       </div>
     </section>
 
-    <section>
+    <section id="descarga">
       <div class="container">
         <h2 class="section-title">Descarga</h2>
         <p class="section-intro">Usa el instalador de 64 bits para que toda la clase tenga la misma versión.</p>
@@ -193,7 +249,7 @@
       </div>
     </section>
 
-    <section>
+    <section id="capturas">
       <div class="container">
         <h2 class="section-title">Capturas de referencia</h2>
         <div class="gallery">
@@ -203,7 +259,7 @@
       </div>
     </section>
 
-    <section>
+    <section id="recordatorios">
       <div class="container">
         <h2 class="section-title">Recordatorios rápidos</h2>
         <div class="tips">
@@ -334,9 +390,33 @@ Receiving objects: 100% ... done.</code></pre></div></article>
           <article class="step"><div class="step-number">6</div><h3>Red</h3><p>En el desplegable <strong>Conexión</strong> selecciona <strong>EVE-NG-Switch</strong>.</p><div class="note">Si no aparece, vuelve al Paso 5 y ejecuta de nuevo <code>setup-client.ps1</code> como administrador.</div></article>
           <article class="step"><div class="step-number">7</div><h3>Disco duro virtual</h3><p>Ponle el mismo nombre que tu <code>vmname</code> y guárdalo en:</p><div class="code-block"><div class="code-bar"><span>Ruta</span><button class="copy-btn" data-copy="C:\EVE-NG-Local">Copiar</button></div><pre><code>C:\EVE-NG-Local</code></pre></div></article>
           <article class="step"><div class="step-number">8</div><h3>Opciones de instalación</h3><p>Selecciona <strong>"Instalar un SO desde una imagen de arranque"</strong> y busca la ISO:</p><div class="code-block"><div class="code-bar"><span>Ruta ISO</span><button class="copy-btn" data-copy="C:\EVE-NG-Local\eve-ce-6.2.0-4-full.iso">Copiar</button></div><pre><code>C:\EVE-NG-Local\eve-ce-6.2.0-4-full.iso</code></pre></div></article>
-          <article class="step"><div class="step-number">9</div><h3>Finalizar y arrancar</h3><p>Pulsa <strong>Finalizar</strong>, haz doble clic en la VM y pulsa <strong>Iniciar</strong>.</p></article>
+          <article class="step"><div class="step-number">9</div><h3>Finalizar el asistente</h3><p>Pulsa <strong>Finalizar</strong>. <strong>No arranques la VM todavía</strong> — antes hay que aplicar tres configuraciones obligatorias con PowerShell.</p></article>
+          <article class="step">
+            <div class="step-number">10</div>
+            <h3>Configuración obligatoria — ejecuta en PowerShell como Administrador</h3>
+            <p>Sustituye <code>eve-jose</code> por el nombre exacto de tu VM en los tres comandos:</p>
+            <div class="steps" style="margin-top:1rem">
+              <article class="step">
+                <h3>① Deshabilitar Arranque seguro</h3>
+                <p>Sin este paso la VM no arrancará con la ISO de EVE-NG.</p>
+                <div class="code-block"><div class="code-bar"><span>PowerShell — Administrador</span><button class="copy-btn" data-copy='Set-VMFirmware -VMName "eve-jose" -EnableSecureBoot Off'>Copiar</button></div><pre><code>Set-VMFirmware -VMName "eve-jose" -EnableSecureBoot Off</code></pre></div>
+              </article>
+              <article class="step">
+                <h3>② Habilitar virtualización anidada</h3>
+                <p>Imprescindible para que EVE-NG pueda crear sus propios nodos virtuales.</p>
+                <div class="code-block"><div class="code-bar"><span>PowerShell — Administrador</span><button class="copy-btn" data-copy='Set-VMProcessor -VMName "eve-jose" -ExposeVirtualizationExtensions $true'>Copiar</button></div><pre><code>Set-VMProcessor -VMName "eve-jose" -ExposeVirtualizationExtensions $true</code></pre></div>
+              </article>
+              <article class="step">
+                <h3>③ Habilitar MAC Spoofing</h3>
+                <p>Sin esto los nodos de red de EVE-NG no tendrán conectividad.</p>
+                <div class="code-block"><div class="code-bar"><span>PowerShell — Administrador</span><button class="copy-btn" data-copy='Set-VMNetworkAdapter -VMName "eve-jose" -MacAddressSpoofing On'>Copiar</button></div><pre><code>Set-VMNetworkAdapter -VMName "eve-jose" -MacAddressSpoofing On</code></pre></div>
+              </article>
+            </div>
+            <div class="note" style="margin-top:1rem">Una vez ejecutados los tres comandos sin error ya puedes arrancar la VM.</div>
+          </article>
+          <article class="step"><div class="step-number">11</div><h3>Arrancar la VM</h3><p>Haz doble clic en la VM en Hyper-V Manager, pulsa <strong>Iniciar</strong> y arrancará el instalador de EVE-NG.</p></article>
         </div>
-        <div class="hyperv-summary"><h3>Resumen de configuración</h3><table class="data-table"><thead><tr><th>Parámetro</th><th>Valor</th></tr></thead><tbody><tr><td>Nombre de la VM</td><td>Tu <code>vmname</code> registrado</td></tr><tr><td>Ubicación</td><td>Por defecto</td></tr><tr><td>Generación</td><td>Generación 2</td></tr><tr><td>Memoria RAM</td><td>8192 MB</td></tr><tr><td>Switch de red</td><td><code>EVE-NG-Switch</code></td></tr><tr><td>Nombre del disco</td><td>Igual a tu <code>vmname</code></td></tr><tr><td>Ubicación del disco</td><td><code>C:\EVE-NG-Local</code></td></tr><tr><td>ISO de instalación</td><td><code>C:\EVE-NG-Local\eve-ce-6.2.0-4-full.iso</code></td></tr></tbody></table></div>
+        <div class="hyperv-summary"><h3>Resumen de configuración</h3><table class="data-table"><thead><tr><th>Parámetro</th><th>Valor</th></tr></thead><tbody><tr><td>Nombre de la VM</td><td>Tu <code>vmname</code> registrado</td></tr><tr><td>Ubicación</td><td>Por defecto</td></tr><tr><td>Generación</td><td>Generación 2</td></tr><tr><td>Memoria RAM</td><td>8192 MB</td></tr><tr><td>Switch de red</td><td><code>EVE-NG-Switch</code></td></tr><tr><td>Nombre del disco</td><td>Igual a tu <code>vmname</code></td></tr><tr><td>Ubicación del disco</td><td><code>C:\EVE-NG-Local</code></td></tr><tr><td>ISO de instalación</td><td><code>C:\EVE-NG-Local\eve-ce-6.2.0-4-full.iso</code></td></tr><tr><td>Arranque seguro</td><td>Deshabilitado</td></tr><tr><td>Virtualización anidada</td><td>Habilitada</td></tr><tr><td>MAC Spoofing</td><td>Habilitado</td></tr></tbody></table></div>
       </div>
     </section>
 
@@ -460,6 +540,41 @@ Receiving objects: 100% ... done.</code></pre></div></article>
         });
       });
     });
+  </script>
+
+  <script>
+    (() => {
+      const sidebar  = document.getElementById('sidebar');
+      const toggle   = document.getElementById('sidebarToggle');
+      const overlay  = document.getElementById('sidebarOverlay');
+      const isWide   = () => window.innerWidth >= 1200;
+
+      function open()  { sidebar.classList.add('open'); toggle.classList.add('open'); overlay.classList.add('open'); toggle.innerHTML = '&times;'; }
+      function close() { sidebar.classList.remove('open'); toggle.classList.remove('open'); overlay.classList.remove('open'); toggle.innerHTML = '&#9776;'; }
+      function toggle_() { sidebar.classList.contains('open') ? close() : open(); }
+
+      toggle.addEventListener('click', toggle_);
+      overlay.addEventListener('click', close);
+
+      // Cerrar al hacer click en un enlace (mobile)
+      sidebar.querySelectorAll('.sidebar-link').forEach(link => {
+        link.addEventListener('click', () => { if (!isWide()) close(); });
+      });
+
+      // Resaltar sección activa al hacer scroll
+      const sections = document.querySelectorAll('section[id]');
+      const links    = sidebar.querySelectorAll('.sidebar-link[href^="#"]');
+      const observer = new IntersectionObserver(entries => {
+        entries.forEach(entry => {
+          if (entry.isIntersecting) {
+            links.forEach(l => l.classList.remove('active'));
+            const active = sidebar.querySelector(`.sidebar-link[href="#${entry.target.id}"]`);
+            if (active) active.classList.add('active');
+          }
+        });
+      }, { rootMargin: '-30% 0px -60% 0px' });
+      sections.forEach(s => observer.observe(s));
+    })();
   </script>
 </body>
 </html>
