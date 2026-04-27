@@ -357,7 +357,32 @@ Receiving objects: 100% ... done.</code></pre></div></article>
           <article class="step"><div class="step-number">6</div><h3>Configuración de red</h3><p>En el desplegable <strong>Conexión</strong>, selecciona el switch <strong>EVE-NG-Switch</strong>. Este switch fue creado automáticamente por el script <code>setup-client.ps1</code> que ejecutaste en el Paso 5.</p><div class="note">Si <strong>EVE-NG-Switch</strong> no aparece en la lista, vuelve al Paso 5 y ejecuta de nuevo <code>setup-client.ps1</code> como administrador.</div></article>
           <article class="step"><div class="step-number">7</div><h3>Disco duro virtual</h3><p>Pon al disco el mismo nombre que tu <code>vmname</code> y guárdalo en la carpeta especial que creó el script <code>sync.ps1</code> en <code>C:</code>, cuyo nombre coincide con tu <code>folder</code> registrado.</p><div class="code-block"><div class="code-bar"><span>Ruta de ejemplo</span><button class="copy-btn" data-copy="C:\EVE-NG-Local">Copiar</button></div><pre><code>C:\EVE-NG-Local</code></pre></div></article>
           <article class="step"><div class="step-number">8</div><h3>Opciones de instalación</h3><p>Selecciona <strong>"Instalar un sistema operativo desde una imagen de arranque"</strong> y localiza la ISO de EVE-NG descargada por el script de sincronización:</p><div class="code-block"><div class="code-bar"><span>Ruta de la ISO</span><button class="copy-btn" data-copy="C:\EVE-NG-Local\eve-ce-6.2.0-4-full.iso">Copiar</button></div><pre><code>C:\EVE-NG-Local\eve-ce-6.2.0-4-full.iso</code></pre></div></article>
-          <article class="step"><div class="step-number">9</div><h3>Finalizar y arrancar</h3><p>Revisa el resumen y pulsa <strong>Finalizar</strong>. Haz doble clic en la VM en Hyper-V Manager, pulsa <strong>Iniciar</strong> y arrancará el instalador de EVE-NG.</p></article>
+          <article class="step"><div class="step-number">9</div><h3>Finalizar el asistente</h3><p>Revisa el resumen y pulsa <strong>Finalizar</strong>. <strong>No arranques la VM todavía</strong> — antes hay que configurar tres opciones obligatorias.</p></article>
+          <article class="step">
+            <div class="step-number">10</div>
+            <h3>Configuración obligatoria antes de arrancar</h3>
+            <p>Haz clic derecho sobre la VM en Hyper-V Manager y selecciona <strong>Configuración</strong>. Debes aplicar los tres cambios siguientes:</p>
+            <p>Abre <strong>PowerShell como Administrador</strong> y ejecuta los tres comandos siguientes, sustituyendo <code>eve-jose</code> por el nombre exacto de tu VM:</p>
+            <div class="steps" style="margin-top: 1rem;">
+              <article class="step">
+                <h3>① Deshabilitar Arranque seguro</h3>
+                <p>Sin este paso la VM no arrancará con la ISO de EVE-NG.</p>
+                <div class="code-block"><div class="code-bar"><span>PowerShell — Administrador</span><button class="copy-btn" data-copy="Set-VMFirmware -VMName &quot;eve-jose&quot; -EnableSecureBoot Off">Copiar</button></div><pre><code>Set-VMFirmware -VMName "eve-jose" -EnableSecureBoot Off</code></pre></div>
+              </article>
+              <article class="step">
+                <h3>② Habilitar virtualización anidada</h3>
+                <p>Imprescindible para que EVE-NG pueda crear sus propios nodos virtuales.</p>
+                <div class="code-block"><div class="code-bar"><span>PowerShell — Administrador</span><button class="copy-btn" data-copy="Set-VMProcessor -VMName &quot;eve-jose&quot; -ExposeVirtualizationExtensions $true">Copiar</button></div><pre><code>Set-VMProcessor -VMName "eve-jose" -ExposeVirtualizationExtensions $true</code></pre></div>
+              </article>
+              <article class="step">
+                <h3>③ Habilitar MAC Spoofing</h3>
+                <p>Sin esto los nodos de red de EVE-NG no tendrán conectividad.</p>
+                <div class="code-block"><div class="code-bar"><span>PowerShell — Administrador</span><button class="copy-btn" data-copy="Set-VMNetworkAdapter -VMName &quot;eve-jose&quot; -MacAddressSpoofing On">Copiar</button></div><pre><code>Set-VMNetworkAdapter -VMName "eve-jose" -MacAddressSpoofing On</code></pre></div>
+              </article>
+            </div>
+            <div class="note" style="margin-top:1rem;">Una vez ejecutados los tres comandos sin error ya puedes arrancar la VM.</div>
+          </article>
+          <article class="step"><div class="step-number">11</div><h3>Arrancar la VM</h3><p>Haz doble clic en la VM en Hyper-V Manager, pulsa <strong>Iniciar</strong> y arrancará el instalador de EVE-NG.</p></article>
         </div>
         <div class="hyperv-summary">
           <h3>Resumen de configuración de la VM</h3>
